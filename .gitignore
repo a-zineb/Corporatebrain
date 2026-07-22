@@ -1,0 +1,41 @@
+# Fichiers Python compilés
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environnement virtuel
+venv/
+.venv/
+env/
+
+# Bases de données ChromaDB (générées automatiquement)
+chroma_db/
+chroma_db_*/
+
+# Dossiers de documents (données sensibles de l'entreprise)
+doc_storage/
+doc_storage_v2/
+data/
+csv/
+
+# Logs d'audit
+audit_log.jsonl
+audit_log_v2.jsonl
+
+# Fichiers système Windows
+desktop.ini
+Thumbs.db
+
+# IDE et éditeurs
+.vscode/
+.idea/
+*.swp
+
+# Fichiers temporaires
+*.tmp
+*.log
+
+# Clés et secrets
+.env
+secrets.toml
+.streamlit/secrets.toml
