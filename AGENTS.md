@@ -29,3 +29,4 @@ Une application Streamlit fonctionnelle avec :
 - Ne jamais tout réécrire d'un coup sans expliquer les changements
 - Garder le code simple et lisible, pas besoin d'optimisations complexes
 - Le venv doit toujours rester actif avant d'installer quoi que ce soit
+- Après CHAQUE modification de code aboutie (nouvelle fonctionnalité, correction de bug), tu DOIS proposer à l'utilisateur la commande `git commit` exacte (avec un message clair) pour sauvegarder cette modification précise dans l'historique Git.

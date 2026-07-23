@@ -1,70 +1,70 @@
-# 🧠 Corporate Brain — Assistant RAG d'Entreprise
+# Corporate Brain — Enterprise RAG Assistant
 
-> Application RAG (Retrieval-Augmented Generation) développée dans le cadre d'un PFA à **Atos**.
-> Permet à un employé de poser des questions en langage naturel sur les documents internes de l'entreprise et d'obtenir une réponse générée par IA, avec les sources citées.
-
----
-
-## ✨ Fonctionnalités
-
-- 📄 **Upload de documents** : PDF, DOCX, DOC (Word 97), XLSX, CSV, ZIP
-- 🔍 **Recherche hybride** : Vectorielle (Sentence Transformers) + BM25 (mots-clés) avec fusion RRF
-- 🤖 **Génération de réponses** : via LLM local Ollama (Qwen 2.5, Llama 3, Mistral...)
-- 🗂️ **Filtres** : par Zone Géographique (OCM, OEG, OJO, OCI) et par Application (MZ, KPSA)
-- 📎 **Sources citées** : chaque réponse affiche les fichiers sources avec bouton d'ouverture directe
-- 🛡️ **Anti-hallucination** : l'IA refuse de répondre si l'information n'est pas dans les documents
-- 💬 **Mémoire conversationnelle** : reformulation des questions avec l'historique du chat
+> A Retrieval-Augmented Generation (RAG) application developed for Atos.
+> Allows employees to ask natural language questions about internal company documents and receive AI-generated answers with cited sources.
 
 ---
 
-## 🛠️ Stack Technique
+## Features
 
-| Composant | Technologie |
+- Document Upload: PDF, DOCX, DOC (Word 97), XLSX, CSV, ZIP
+- Hybrid Search: Vectorial (Sentence Transformers) + BM25 (keyword) with RRF fusion
+- Answer Generation: via local Ollama LLM (Qwen 2.5, Llama 3, Mistral...)
+- Filters: by Geographical Zone (OCM, OEG, OJO, OCI) and by Application (MZ, KPSA)
+- Cited Sources: each answer displays the source files with a direct open button
+- Anti-Hallucination: the AI refuses to answer if the information is not in the documents
+- Conversational Memory: reformulates questions based on chat history
+
+---
+
+## Tech Stack
+
+| Component | Technology |
 |---|---|
 | Interface | Streamlit |
-| Extraction PDF | PyMuPDF (fitz) |
-| Extraction DOCX | python-docx |
-| Extraction DOC (Word 97) | olefile |
-| Embeddings | `paraphrase-multilingual-MiniLM-L12-v2` |
-| Base Vectorielle | ChromaDB |
-| Recherche Mots-Clés | BM25 (rank_bm25) |
+| PDF Extraction | PyMuPDF (fitz) |
+| DOCX Extraction | python-docx |
+| DOC (Word 97) Extraction | olefile |
+| Embeddings | paraphrase-multilingual-MiniLM-L12-v2 |
+| Vector Database | ChromaDB |
+| Keyword Search | BM25 (rank_bm25) |
 | LLM | Ollama (local) |
 
 ---
 
-## 🚀 Installation
+## Installation
 
-### 1. Prérequis
+### 1. Prerequisites
 - Python 3.10+
-- [Ollama](https://ollama.ai) installé et un modèle téléchargé (`qwen2.5:7b` recommandé)
+- [Ollama](https://ollama.ai) installed and a model downloaded (`qwen2.5:7b` recommended)
 
 ```bash
 ollama pull qwen2.5:7b
 ```
 
-### 2. Cloner le projet
+### 2. Clone the repository
 
 ```bash
-git clone https://github.com/<TON_USERNAME>/Corporatebrain.git
+git clone https://github.com/a-zineb/Corporatebrain.git
 cd Corporatebrain
 ```
 
-### 3. Créer l'environnement virtuel
+### 3. Create the virtual environment
 
 ```bash
 python -m venv venv
 venv\Scripts\activate        # Windows
-# ou
+# or
 source venv/bin/activate     # Linux/Mac
 ```
 
-### 4. Installer les dépendances
+### 4. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 5. Lancer l'application
+### 5. Run the application
 
 ```bash
 streamlit run app_V2.py
@@ -72,32 +72,32 @@ streamlit run app_V2.py
 
 ---
 
-## 📁 Structure du Projet
+## Project Structure
 
 ```
 Corporatebrain/
-├── app_V2.py           # Application principale (version courante)
-├── app.py              # Version initiale (référence)
-├── requirements.txt    # Dépendances Python
+├── app_V2.py           # Main application (current version)
+├── app.py              # Initial version (reference)
+├── requirements.txt    # Python dependencies
 ├── .streamlit/
-│   └── config.toml     # Configuration Streamlit (thème)
-├── doc_storage_v2/     # 📂 Dossier des documents (ignoré par git)
-└── chroma_db_final_v3/ # 📂 Base vectorielle (générée auto, ignorée par git)
+│   └── config.toml     # Streamlit configuration (theme)
+├── doc_storage_v2/     # Document folder (ignored by git)
+└── chroma_db_final_v3/ # Vector database (auto-generated, ignored by git)
 ```
 
-> ⚠️ Les documents d'entreprise et la base ChromaDB sont **exclus du dépôt** pour des raisons de confidentialité. Placez vos propres documents dans `doc_storage_v2/` après l'installation.
+> Note: Enterprise documents and the ChromaDB database are excluded from the repository for confidentiality reasons. Place your own documents in doc_storage_v2/ after installation.
 
 ---
 
-## 📌 Versions
+## Versions
 
-| Version | Fichier | Description |
+| Version | File | Description |
 |---|---|---|
-| v1 | `app.py` | Version initiale : upload manuel, ChromaDB basique |
-| v2 | `app_V2.py` | Recherche hybride RRF, filtres métadonnées, support DOC/XLSX, sources citées |
+| v1 | app.py | Initial version: manual upload, basic ChromaDB |
+| v2 | app_V2.py | Hybrid RRF search, metadata filters, DOC/XLSX support, cited sources |
 
 ---
 
-## 👤 Auteur
+## Author
 
-Développé par **Zineb** — PFA Atos, 2026
+Developed by Zineb — 2026
