@@ -451,12 +451,27 @@ if "last_lang" not in st.session_state:
 with st.sidebar:
     st.header(" Configuration & Filtres")
     
-    filter_ent = st.selectbox("Zone Géographique (Filiale)", ["Tous", "OCM", "OEG", "OJO", "OCI"])
-    filter_application = st.selectbox("Application", ["Tous", "KPSA", "MZ"])
+    st.write(" Zone Géographique (Filiale)")
+    with st.container(height=120):
+        filter_ent = st.radio(
+            "Zone Géographique", 
+            ["Tous", "OCM", "OEG", "OJO", "OCI"], 
+            index=0, 
+            label_visibility="collapsed"
+        )
+        
+    st.write("Application")
+    with st.container(height=120):
+        filter_application = st.radio(
+            "Application", 
+            ["Tous", "KPSA", "MZ"], 
+            index=0,
+            label_visibility="collapsed"
+        )
     
     # CHARGEMENT DYNAMIQUE DES MODÈLES OLLAMA
     available_models = get_installed_ollama_models()
-    st.write("🤖 Modèle LLM")
+    st.write("Modèle LLM")
     with st.container(height=150):
         selected_model = st.radio(
             "Modèle LLM", 
