@@ -1,6 +1,6 @@
 # Corporate Brain — Enterprise RAG Assistant
 
-> A Retrieval-Augmented Generation (RAG) application developed for Atos.
+> A Retrieval-Augmented Generation (RAG) application.
 > Allows employees to ask natural language questions about internal company documents and receive AI-generated answers with cited sources.
 
 ---
@@ -32,46 +32,6 @@
 
 ---
 
-## Installation
-
-### 1. Prerequisites
-- Python 3.10+
-- [Ollama](https://ollama.ai) installed and a model downloaded (`qwen2.5:7b` recommended)
-
-```bash
-ollama pull qwen2.5:7b
-```
-
-### 2. Clone the repository
-
-```bash
-git clone https://github.com/a-zineb/Corporatebrain.git
-cd Corporatebrain
-```
-
-### 3. Create the virtual environment
-
-```bash
-python -m venv venv
-venv\Scripts\activate        # Windows
-# or
-source venv/bin/activate     # Linux/Mac
-```
-
-### 4. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 5. Run the application
-
-```bash
-streamlit run app_V2.py
-```
-
----
-
 ## Project Structure
 
 ```
@@ -85,7 +45,7 @@ Corporatebrain/
 └── chroma_db_final_v3/ # Vector database (auto-generated, ignored by git)
 ```
 
-> Note: Enterprise documents and the ChromaDB database are excluded from the repository for confidentiality reasons. Place your own documents in doc_storage_v2/ after installation.
+> Note: Enterprise documents and the ChromaDB database are excluded from the repository for confidentiality reasons.
 
 ---
 
