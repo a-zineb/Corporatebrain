@@ -456,11 +456,14 @@ with st.sidebar:
     
     # CHARGEMENT DYNAMIQUE DES MODÈLES OLLAMA
     available_models = get_installed_ollama_models()
-    selected_model = st.selectbox(
-        "Modèle LLM", 
-        available_models, 
-        index=0
-    )
+    st.write("🤖 Modèle LLM")
+    with st.container(height=150):
+        selected_model = st.radio(
+            "Modèle LLM", 
+            available_models, 
+            index=0,
+            label_visibility="collapsed"
+        )
     
     st.markdown("---")
     
