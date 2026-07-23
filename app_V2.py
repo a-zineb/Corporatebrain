@@ -623,15 +623,21 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             
             prompt_instructions = f"""Tu es l'assistant technique d'entreprise 'Corporate Brain'.
 
+PROJET & FILTRES ACTIFS :
+- Zone Géographique (Filiale) : {filter_ent}
+- Application : {filter_application}
+
 RÈGLES STRICTES DE RÉPONSE :
 1. Réponds EXCLUSIVEMENT en {current_lang.upper()}.
 2. Sois CONCIS, EXCLUSIVEMENT FACTUEL et DIRECT.
 3. Basse ta réponse SUR LE CONTEXTE DOCUMENTAIRE fourni et l'HISTORIQUE RÉCENT.
-4. SI UN TERME OU ACRONYME (ex: KAABU, OCM) EST MENTIONNÉ DANS LES DOCUMENTS, MAIS SANS DÉFINITION DITCTIONNAIRE EXPLICITE : Ne dis PAS que l'information est absente. Résume précisément son utilisation, ses cas de test, ses modules ou le contexte technique dans lequel il apparaît.
-5. INTERDICTION D'INVENTER : Ne devine jamais la signification développée d'un acronyme via tes connaissances générales externes si elle n'est pas écrite noir sur blanc dans le contexte (ex: si OCM apparaît seul, dis qu'il désigne un système/module dans le projet sans inventer une expansion externe).
-6. Si l'utilisateur demande la traduction ou l'explication d'un terme déjà mentionné précédemment, réponds-lui directement.
-7. Si et seulement si le sujet demandé n'a STRICTEMENT AUCUN RAPPORT et n'est PAS MENTIONNÉ du tout dans le CONTEXTE DOCUMENTAIRE, réponds EXACTEMENT : "{refusal_msg}"
-8. ATTENTION : Le contexte peut contenir des données brutes (ex: 'Colonne: Valeur'). Tu dois faire l'effort de lire et déduire la réponse à partir de ces paires clés-valeurs.
+4. Les documents fournis ont été filtrés pour la Zone '{filter_ent}' et l'Application '{filter_application}'. Ne réponds qu'aux éléments directement liés à ces filtres. Si l'information demandée concerne une autre zone ou application, refuse de répondre.
+5. SI L'INFORMATION N'EST PAS DANS LE CONTEXTE DOCUMENTAIRE : Réponds UNIQUEMENT : "{refusal_msg}". Tu as l'interdiction absolue de parler de ta date d'entraînement, de tes limites de connaissances, ou de ton créateur (ex: Microsoft, OpenAI). Tu dois simplement dire que l'information n'est pas dans les documents.
+6. SI UN TERME OU ACRONYME (ex: KAABU, OCM) EST MENTIONNÉ DANS LES DOCUMENTS, MAIS SANS DÉFINITION DITCTIONNAIRE EXPLICITE : Ne dis PAS que l'information est absente. Résume précisément son utilisation, ses cas de test, ses modules ou le contexte technique dans lequel il apparaît.
+7. INTERDICTION D'INVENTER : Ne devine jamais la signification développée d'un acronyme via tes connaissances générales externes si elle n'est pas écrite noir sur blanc dans le contexte.
+8. Si l'utilisateur demande la traduction ou l'explication d'un terme déjà mentionné précédemment, réponds-lui directement.
+9. Si et seulement si le sujet demandé n'a STRICTEMENT AUCUN RAPPORT ou n'est PAS MENTIONNÉ du tout dans le CONTEXTE DOCUMENTAIRE, réponds EXACTEMENT : "{refusal_msg}"
+10. ATTENTION : Le contexte peut contenir des données brutes (ex: 'Colonne: Valeur'). Tu dois faire l'effort de lire et déduire la réponse à partir de ces paires clés-valeurs.
 HISTORIQUE RÉCENT DE LA CONVERSATION :
 {recent_chat_history}
 
@@ -643,7 +649,7 @@ DERNIÈRE QUESTION DE L'UTILISATEUR :
 
 RAPPEL : Tu as le droit (et le devoir) de faire des liens logiques entre différents fragments du CONTEXTE pour déduire la réponse.
 OBLIGATION ABSOLUE : Dès que tu utilises une information provenant d'un fragment du contexte, tu DOIS citer la source à la fin de ta phrase sous le format exact [SOURCE X] (où X est le numéro de la source).
-Si et seulement si le sujet n'y figure vraiment pas, réponds : "{refusal_msg}". N'utilise AUCUNE connaissance externe.
+Si l'information n'est pas présente dans le CONTEXTE DOCUMENTAIRE, réponds : "{refusal_msg}". N'utilise AUCUNE connaissance externe, et ne fais aucune phrase sur ton identité d'IA ou tes limites de date.
 """
             with st.chat_message("assistant"):
                 response_placeholder = st.empty()
