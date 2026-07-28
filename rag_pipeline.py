@@ -13,6 +13,8 @@ silently breaking future consumers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
+import re
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from rank_bm25 import BM25Okapi
@@ -50,6 +52,15 @@ __all__ = [
     "build_bm25_index",
     "metadata_matches_filter",
     "hybrid_search",
+    "build_source_list",
+    "build_context",
+    "build_recent_chat_history",
+    "build_no_match_message",
+    "build_production_prompt",
+    "parse_cited_source_ids",
+    "detect_no_coverage",
+    "select_display_sources",
+    "deduplicate_sources_by_path",
 ]
 
 
@@ -211,6 +222,7 @@ class CitationResult:
     cited_source_ids: tuple[int, ...] = ()
     display_sources: tuple[PromptSource, ...] = ()
     no_coverage_detected: bool = False
+    invalid_source_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,3 +485,175 @@ def hybrid_search(
         fallback_used=fallback_used,
         fallback_chunks=fallback_chunks,
     )
+
+
+def build_source_list(
+    chunks: Sequence[str],
+    metas: Sequence[Metadata],
+    storage_dir: str,
+    relaxed_flag: bool = False,
+    start_id: int = 1,
+) -> list[PromptSource]:
+    """Build numbered prompt sources exactly as the current app.py helper does."""
+
+    output: list[PromptSource] = []
+    for index, (doc_text, meta) in enumerate(zip(chunks, metas)):
+        filename = meta.get("source_file", "Fichier source")
+        output.append(
+            PromptSource(
+                source_id=start_id + index,
+                file_name=filename,
+                location=meta.get("location", "N/A"),
+                text=doc_text,
+                path=os.path.abspath(os.path.join(storage_dir, filename)),
+                relaxed=relaxed_flag,
+            )
+        )
+    return output
+
+
+def build_context(sources: Sequence[PromptSource]) -> str:
+    """Format the exact source-labelled context currently sent to the LLM."""
+
+    context_chunks_formatted: list[str] = []
+    for source in sources:
+        tag = " (hors des filtres actifs — piste proche)" if source.relaxed else ""
+        context_chunks_formatted.append(f"[SOURCE {source.source_id}]{tag}\n{source.text}")
+    return "\n---\n".join(context_chunks_formatted)
+
+
+def build_recent_chat_history(history: Sequence[ChatMessage | Metadata]) -> str:
+    """Render recent history using the exact role labels in the active prompt."""
+
+    recent_chat_history = ""
+    for message in history[-4:]:
+        role = "Utilisateur" if message["role"] == "user" else "Assistant"
+        recent_chat_history += f"{role}: {message['content']}\n"
+    return recent_chat_history
+
+
+def build_no_match_message(current_lang: str) -> str:
+    """Return the active empty-context response without changing its wording."""
+
+    return (
+        "I couldn't find anything close to that in the indexed documents, even outside the current "
+        "filters. Could you rephrase your question, try a related keyword, or tell me the department/"
+        "topic you're aiming for? That would help me point you in the right direction."
+        if current_lang == "English"
+        else "Je n'ai rien trouvé de proche dans les documents indexés, même en élargissant la recherche "
+             "au-delà des filtres actifs. Peux-tu reformuler ta question, essayer un mot-clé associé, ou "
+             "me préciser le service/sujet visé ? Ça m'aiderait à t'orienter."
+    )
+
+
+def build_production_prompt(
+    *,
+    user_query: str,
+    filter_ent: str,
+    filter_application: str,
+    history: Sequence[ChatMessage | Metadata],
+    sources: Sequence[PromptSource],
+    current_lang: str,
+    was_relaxed: bool,
+) -> PromptResult:
+    """Construct the current production prompt byte-for-byte from its inputs."""
+
+    context_str = build_context(sources)
+    recent_chat_history = build_recent_chat_history(history)
+    relaxed_note = (
+        "\nNOTE IMPORTANTE : certaines sources ci-dessus sont marquées '(hors des filtres actifs — piste "
+        "proche)'. Elles ne correspondent pas exactement aux filtres Zone/Application sélectionnés, mais "
+        "peuvent constituer une piste utile à proposer à l'utilisateur (mentionne-le clairement, par "
+        "exemple : \"je n'ai rien trouvé pile dans [filtre], mais j'ai trouvé quelque chose de proche dans "
+        "[autre catégorie], est-ce que ça pourrait t'intéresser ?\")."
+        if was_relaxed else ""
+    )
+    prompt = f"""Tu es l'assistant technique d'entreprise 'Corporate Brain'. Ton ton est celui d'un collègue serviable qui engage la discussion, pas celui d'un moteur de recherche binaire qui répond juste "trouvé" ou "pas trouvé".
+
+PROJET & FILTRES ACTIFS :
+- Zone Géographique (Filiale) : {filter_ent}
+- Application : {filter_application}
+
+HISTORIQUE RÉCENT DE LA CONVERSATION :
+{recent_chat_history}
+
+CONTEXTE DOCUMENTAIRE :
+{context_str}
+{relaxed_note}
+
+DERNIÈRE QUESTION DE L'UTILISATEUR :
+{user_query}
+
+INSTRUCTIONS :
+1. Si l'information exacte demandée est présente dans le CONTEXTE, réponds directement et cite la ou les sources au format [SOURCE X].
+2. Si l'information exacte n'est pas présente mais que tu repères des éléments proches, apparentés, ou des synonymes/catégories voisines dans le CONTEXTE (par exemple : l'utilisateur cherche "département IT" et tu trouves des mentions de "Technologie", "Informatique", "Systèmes d'Information", ou un acronyme lié), NE REFUSE PAS SÈCHEMENT. Propose plutôt ces pistes de façon naturelle et conversationnelle, en citant leur source [SOURCE X], et explique en quoi elles pourraient correspondre à la demande.
+3. Tu as le droit de faire des rapprochements logiques entre plusieurs fragments du CONTEXTE pour construire ta réponse ou tes suggestions.
+4. Termine par une question ouverte ou une invitation à préciser si tu n'es pas sûr à 100% (ex : "Est-ce que ça correspond à ce que tu cherches ?" ou "Veux-tu que je regarde plus précisément du côté de X ?"), afin d'entretenir la discussion plutôt que de la clore abruptement.
+5. Utilise uniquement les informations du CONTEXTE DOCUMENTAIRE ci-dessus (pas de connaissances externes/génériques), mais reste ouvert et exploratoire avec ce qui s'y trouve plutôt que strictement littéral.
+6. Ne dis "je n'ai rien trouvé" que si le CONTEXTE ne contient vraiment rien qui se rapporche même de loin au sujet de la question — et dans ce cas, propose quand même une piste (reformulation, mot-clé à essayer, ou filtre à changer) plutôt que de t'arrêter là.
+7. Ne fais aucune remarque sur ton identité d'IA ou tes limites de date.
+8. Réponds dans la même langue que la question de l'utilisateur ({current_lang}).
+"""
+    return PromptResult(prompt=prompt, sources=tuple(sources), context=context_str)
+
+
+def parse_cited_source_ids(response: str) -> tuple[int, ...]:
+    """Parse citation IDs with the current set-based deduplication behavior."""
+
+    return tuple(list(set(int(number) for number in re.findall(r"\[SOURCE (\d+)\]", response))))
+
+
+def detect_no_coverage(response: str) -> bool:
+    """Apply the active app.py no-documentary-answer regex patterns unchanged."""
+
+    response_lower = response.lower()
+    no_coverage_patterns = [
+        r"je ne trouve pas.*(document|contexte|source|corpus)",
+        r"n.est pas.*(document|contexte|source|corpus)",
+        r"information.*(non couverte|absente|indisponible)",
+        r"le contexte( fourni)? ne contient aucune information",
+        r"le contexte fourni ne contient pas",
+        r"les documents ne contiennent aucune information",
+        r"ne trouve pas de r.ponse dans le contexte( fourni)?",
+        r"la question pos.e ne trouve pas de r.ponse dans le contexte( fourni)?",
+        r"ne trouve pas de r.ponse dans les documents",
+        r"n.est pas mentionn. dans les documents",
+        r"n.est pas abord. dans les documents",
+        r"l.information n.est pas pr.sente dans les documents",
+        r"(i cannot|i can.t|not found|not covered).*(document|context|source|corpus)",
+        r"(not mentioned|not available).*(document|context|source|corpus)",
+    ]
+    return any(re.search(pattern, response_lower, flags=re.DOTALL) for pattern in no_coverage_patterns)
+
+
+def select_display_sources(response: str, sources: Sequence[PromptSource]) -> CitationResult:
+    """Reproduce current citation, refusal, and source-selection behavior."""
+
+    cited_source_ids = parse_cited_source_ids(response)
+    source_ids = {source.source_id for source in sources}
+    invalid_source_ids = tuple(source_id for source_id in cited_source_ids if source_id not in source_ids)
+    no_coverage_detected = detect_no_coverage(response)
+
+    if no_coverage_detected:
+        display_sources: tuple[PromptSource, ...] = ()
+    elif cited_source_ids:
+        display_sources = tuple(source for source in sources if source.source_id in cited_source_ids)
+    else:
+        display_sources = ()
+
+    return CitationResult(
+        cited_source_ids=cited_source_ids,
+        display_sources=display_sources,
+        no_coverage_detected=no_coverage_detected,
+        invalid_source_ids=invalid_source_ids,
+    )
+
+
+def deduplicate_sources_by_path(sources: Sequence[PromptSource]) -> tuple[PromptSource, ...]:
+    """Keep the first source per path, matching the current Streamlit display."""
+
+    unique_sources: dict[str, PromptSource] = {}
+    for source in sources:
+        if source.path not in unique_sources:
+            unique_sources[source.path] = source
+    return tuple(unique_sources.values())

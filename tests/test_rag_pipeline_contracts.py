@@ -86,7 +86,20 @@ class RAGPipelineContractTests(unittest.TestCase):
         module_functions = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
         self.assertEqual(
             module_functions,
-            ["build_bm25_index", "metadata_matches_filter", "hybrid_search"],
+            [
+                "build_bm25_index",
+                "metadata_matches_filter",
+                "hybrid_search",
+                "build_source_list",
+                "build_context",
+                "build_recent_chat_history",
+                "build_no_match_message",
+                "build_production_prompt",
+                "parse_cited_source_ids",
+                "detect_no_coverage",
+                "select_display_sources",
+                "deduplicate_sources_by_path",
+            ],
         )
 
 
