@@ -33,6 +33,9 @@ __all__ = [
     "BM25Candidate",
     "RRFScore",
     "RetrievalResult",
+    "VectorQueryCall",
+    "RetrievalPassTrace",
+    "HybridSearchResult",
     "PromptSource",
     "PromptResult",
     "CitationResult",
@@ -46,6 +49,7 @@ __all__ = [
     "PipelineRuntime",
     "build_bm25_index",
     "metadata_matches_filter",
+    "hybrid_search",
 ]
 
 
@@ -135,6 +139,48 @@ class RetrievalResult:
     vector_candidates: tuple[VectorCandidate, ...] = ()
     bm25_candidates: tuple[BM25Candidate, ...] = ()
     rrf_scores: tuple[RRFScore, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class VectorQueryCall:
+    """Arguments and raw candidate evidence for one Chroma vector query."""
+
+    query_embeddings: tuple[tuple[float, ...], ...]
+    n_results: int
+    metadata_filter: MetadataFilter | None
+    include: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalPassTrace:
+    """Evidence from one filtered or unfiltered hybrid retrieval pass."""
+
+    vector_query: VectorQueryCall
+    vector_candidates: tuple[VectorCandidate, ...] = ()
+    bm25_candidates: tuple[BM25Candidate, ...] = ()
+    rrf_scores: tuple[RRFScore, ...] = ()
+    selected_chunks: tuple[ChunkRecord, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class HybridSearchResult:
+    """Shared hybrid-search outcome with a legacy-compatible result adapter."""
+
+    filtered: RetrievalPassTrace
+    fallback: RetrievalPassTrace | None = None
+    fallback_used: bool = False
+    fallback_chunks: tuple[ChunkRecord, ...] = ()
+
+    def as_legacy_tuple(self) -> tuple[list[str], list[Metadata], list[str], list[Metadata], bool]:
+        """Return the five values currently returned by ``app.py`` unchanged."""
+
+        return (
+            [chunk.text for chunk in self.filtered.selected_chunks],
+            [chunk.metadata for chunk in self.filtered.selected_chunks],
+            [chunk.text for chunk in self.fallback_chunks],
+            [chunk.metadata for chunk in self.fallback_chunks],
+            self.fallback_used,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,3 +352,124 @@ def metadata_matches_filter(meta: Metadata, chroma_filter: MetadataFilter | None
                 break
 
     return match
+
+
+def hybrid_search(
+    query: str,
+    collection: VectorStore,
+    embedding_model: EmbeddingEncoder,
+    bm25: BM25Okapi | None,
+    docs: list[str] | None,
+    metadatas: list[Metadata] | None,
+    chroma_filter: MetadataFilter | None = None,
+    top_k: int = 5,
+    min_results_before_relax: int = 3,
+) -> HybridSearchResult:
+    """Run the current vector/BM25/RRF search without changing its behavior.
+
+    This is a direct extraction of the active ``app.py`` orchestration.  In
+    particular, Chroma is called with ``n_results=10`` and no ``include``
+    argument; BM25 uses positive scores only; RRF keys candidates by document
+    text; and the optional fallback removes duplicates by document text.
+    """
+
+    def run_once(active_filter: MetadataFilter | None, active_top_k: int) -> RetrievalPassTrace:
+        rrf_scores: dict[str, float] = {}
+        doc_to_meta: dict[str, Metadata] = {}
+        vector_ranks: dict[str, int] = {}
+        bm25_ranks: dict[str, int] = {}
+
+        query_vector = embedding_model.encode(query).tolist()
+        vector_query = VectorQueryCall(
+            query_embeddings=(tuple(query_vector),),
+            n_results=10,
+            metadata_filter=active_filter,
+        )
+        vec_results = collection.query(
+            query_embeddings=[query_vector],
+            n_results=10,
+            where=active_filter,
+        )
+
+        vector_candidates: list[VectorCandidate] = []
+        vector_documents = vec_results.get("documents", [[]]) if vec_results else [[]]
+        vector_metadatas = vec_results.get("metadatas", [[]]) if vec_results else [[]]
+        vector_ids = vec_results.get("ids", [[]]) if vec_results else [[]]
+        vector_distances = vec_results.get("distances", [[]]) if vec_results else [[]]
+
+        if vector_documents and len(vector_documents[0]) > 0:
+            for rank, (doc_text, meta) in enumerate(zip(vector_documents[0], vector_metadatas[0])):
+                chunk_id = vector_ids[0][rank] if vector_ids and len(vector_ids[0]) > rank else None
+                distance = vector_distances[0][rank] if vector_distances and len(vector_distances[0]) > rank else None
+                chunk = ChunkRecord(text=doc_text, metadata=meta, chunk_id=chunk_id)
+                vector_candidates.append(VectorCandidate(chunk=chunk, rank=rank, distance=distance))
+                rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (rank + 1 + 60))
+                doc_to_meta[doc_text] = meta
+                vector_ranks[doc_text] = rank
+
+        bm25_candidates: list[BM25Candidate] = []
+        if bm25 is not None and docs is not None:
+            tokenized_query = query.lower().split()
+            bm25_scores = bm25.get_scores(tokenized_query)
+            sorted_indices = sorted(range(len(bm25_scores)), key=lambda index: bm25_scores[index], reverse=True)
+
+            bm25_count = 0
+            for index in sorted_indices:
+                if bm25_count >= 10:
+                    break
+                if bm25_scores[index] <= 0:
+                    break
+
+                meta = metadatas[index]
+                if active_filter and not metadata_matches_filter(meta, active_filter):
+                    continue
+
+                doc_text = docs[index]
+                chunk = ChunkRecord(text=doc_text, metadata=meta)
+                bm25_candidates.append(BM25Candidate(chunk=chunk, rank=bm25_count, score=float(bm25_scores[index])))
+                rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (bm25_count + 1 + 60))
+                doc_to_meta[doc_text] = meta
+                bm25_ranks[doc_text] = bm25_count
+                bm25_count += 1
+
+        sorted_documents = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
+        rrf_trace = tuple(
+            RRFScore(
+                chunk=ChunkRecord(text=doc_text, metadata=doc_to_meta[doc_text]),
+                rank=rank,
+                score=score,
+                vector_rank=vector_ranks.get(doc_text),
+                bm25_rank=bm25_ranks.get(doc_text),
+            )
+            for rank, (doc_text, score) in enumerate(sorted_documents)
+        )
+        selected_chunks = tuple(
+            ChunkRecord(text=doc_text, metadata=doc_to_meta[doc_text])
+            for doc_text, _score in sorted_documents[:active_top_k]
+        )
+
+        return RetrievalPassTrace(
+            vector_query=vector_query,
+            vector_candidates=tuple(vector_candidates),
+            bm25_candidates=tuple(bm25_candidates),
+            rrf_scores=rrf_trace,
+            selected_chunks=selected_chunks,
+        )
+
+    filtered = run_once(chroma_filter, top_k)
+    fallback: RetrievalPassTrace | None = None
+    fallback_chunks: tuple[ChunkRecord, ...] = ()
+    fallback_used = False
+
+    if chroma_filter is not None and len(filtered.selected_chunks) < min_results_before_relax:
+        fallback_used = True
+        fallback = run_once(None, top_k)
+        seen = {chunk.text for chunk in filtered.selected_chunks}
+        fallback_chunks = tuple(chunk for chunk in fallback.selected_chunks if chunk.text not in seen)
+
+    return HybridSearchResult(
+        filtered=filtered,
+        fallback=fallback,
+        fallback_used=fallback_used,
+        fallback_chunks=fallback_chunks,
+    )
