@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
+from rank_bm25 import BM25Okapi
+
 
 __version__ = "1.0"
 API_VERSION = "1.0"
@@ -42,6 +44,8 @@ __all__ = [
     "VectorStore",
     "TextGenerator",
     "PipelineRuntime",
+    "build_bm25_index",
+    "metadata_matches_filter",
 ]
 
 
@@ -251,3 +255,54 @@ class PipelineRuntime(Protocol):
     point without implementing or importing production behavior.
     """
 
+
+def build_bm25_index(
+    _collection: VectorStore,
+    _count: int,
+) -> tuple[BM25Okapi | None, list[str] | None, list[Metadata] | None]:
+    """Build BM25 exactly as the current production application does.
+
+    The ``_count`` parameter is intentionally unused because the active
+    ``app.py`` cache key includes it while construction always reloads all
+    documents and metadata from the collection.  Tokenization is deliberately
+    kept as ``doc.lower().split()`` and collection order is retained exactly.
+    """
+
+    all_data = _collection.get(include=["documents", "metadatas"])
+
+    if not all_data["documents"]:
+        return None, None, None
+
+    documents = all_data["documents"]
+    metadatas = all_data["metadatas"]
+    tokenized_corpus = [document.lower().split() for document in documents]
+    bm25 = BM25Okapi(tokenized_corpus)
+
+    return bm25, documents, metadatas
+
+
+def metadata_matches_filter(meta: Metadata, chroma_filter: MetadataFilter | None) -> bool:
+    """Apply the current production BM25 metadata-filter predicate unchanged.
+
+    This mirrors the nested single-condition and ``$and`` handling currently
+    embedded inside ``app.py``'s hybrid search.  It intentionally supports no
+    additional Chroma operators in this sub-phase.
+    """
+
+    if not chroma_filter:
+        return True
+
+    match = True
+    if "$and" in chroma_filter:
+        for condition in chroma_filter["$and"]:
+            for key, value in condition.items():
+                if meta.get(key) != value:
+                    match = False
+                    break
+    else:
+        for key, value in chroma_filter.items():
+            if meta.get(key) != value:
+                match = False
+                break
+
+    return match
