@@ -49,6 +49,21 @@ class StageTimeoutError(TimeoutError):
         self.timeout_seconds = timeout_seconds
 
 
+@dataclass(frozen=True, slots=True)
+class EvaluatorGenerationBudget:
+    """Evaluator-only streaming output cap; production generator calls are untouched."""
+
+    generator: rag_pipeline.TextGenerator
+    max_output_tokens: int
+
+    def chat(self, **kwargs: Any) -> Any:
+        if kwargs.get("stream"):
+            options = dict(kwargs.get("options") or {})
+            options["num_predict"] = self.max_output_tokens
+            kwargs["options"] = options
+        return self.generator.chat(**kwargs)
+
+
 def run_stage(stage: str, operation: Callable[[], Any], timeout_seconds: float, *, clock: Callable[[], float] = time.perf_counter) -> tuple[Any, float]:
     """Run one read-only evaluator stage with a bounded wait and stage timing."""
 
@@ -283,7 +298,7 @@ def trace_to_json(trace: rag_pipeline.PipelineTrace) -> dict[str, Any]:
     }
 
 
-def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
+def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | int | None]:
     """Average numeric deterministic metrics while preserving unavailable values."""
 
     names = ["recall_at_k", "precision_at_k", "hit_rate_at_k", "mrr", "ndcg_at_k", "latency_ms"]
@@ -294,6 +309,14 @@ def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
     for name in ("citation_valid", "expected_source_match", "refusal_correct"):
         values = [result["metrics"][name] for result in results if result["metrics"][name] is not None]
         summary[name] = sum(values) / len(values) if values else None
+    def failure_code(result: Mapping[str, Any]) -> str | None:
+        trace = result["trace"]
+        failure = trace.get("failure") if isinstance(trace, Mapping) else trace.failure
+        return failure.get("code") if isinstance(failure, Mapping) else (failure.code if failure else None)
+    summary["generation_timeout_count"] = sum(failure_code(result) == "generation_timeout" for result in results)
+    summary["successful_generation_count"] = sum(
+        bool(result.get("response")) and failure_code(result) is None for result in results
+    )
     return summary
 
 
@@ -423,12 +446,16 @@ def main() -> None:
     parser.add_argument("--case-timeout-seconds", type=float)
     parser.add_argument("--stage-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--limit-cases", type=int)
+    parser.add_argument("--max-generation-tokens", type=int, default=256)
     args = parser.parse_args()
     config = rag_pipeline.RAGConfig()
     runtime = load_runtime(config, stage_timeout_seconds=args.stage_timeout_seconds)
+    if args.max_generation_tokens <= 0:
+        parser.error("--max-generation-tokens must be greater than zero")
+    evaluator_generator = EvaluatorGenerationBudget(ollama, args.max_generation_tokens)
     output_dir = args.output_dir or DEFAULT_RUNS_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     results = run_cases(
-        load_cases(args.benchmark)[:args.limit_cases] if args.limit_cases else load_cases(args.benchmark), runtime, ollama, output_dir, resume=args.resume,
+        load_cases(args.benchmark)[:args.limit_cases] if args.limit_cases else load_cases(args.benchmark), runtime, evaluator_generator, output_dir, resume=args.resume,
         case_timeout_seconds=args.case_timeout_seconds, stage_timeout_seconds=args.stage_timeout_seconds,
     )
     if args.judge:

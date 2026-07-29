@@ -193,6 +193,31 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(result["trace"].failure.code, "generation_timeout")
         self.assertIn("query_rewriting", result["stage_timings_ms"])
 
+    def test_evaluator_generation_budget_caps_only_streaming_output(self):
+        generator = FakeGenerator("Answer")
+        budget = rag_evaluator.EvaluatorGenerationBudget(generator, 17)
+        budget.chat(model="qwen3:8b", messages=[], options={"temperature": 0.2}, stream=True)
+        budget.chat(model="qwen3:8b", messages=[{"content": "QUESTION : x QUESTION REFORMULÉE"}], options={"temperature": 0.0}, stream=False)
+        self.assertEqual(generator.calls[0]["options"], {"temperature": 0.2, "num_predict": 17})
+        self.assertEqual(generator.calls[1]["options"], {"temperature": 0.0})
+
+    def test_summary_separates_generation_timeouts(self):
+        class SlowGenerator(FakeGenerator):
+            def chat(self, **kwargs):
+                if kwargs.get("stream"):
+                    time.sleep(0.05)
+                return super().chat(**kwargs)
+        timed_out = rag_evaluator.evaluate_case(
+            case_for(self.content_hash), self.runtime,
+            SlowGenerator("Answer [SOURCE 1]"), stage_timeout_seconds=0.001,
+        )
+        successful = rag_evaluator.evaluate_case(
+            case_for(self.content_hash), self.runtime, FakeGenerator("Answer [SOURCE 1]")
+        )
+        summary = rag_evaluator.aggregate([timed_out, successful])
+        self.assertEqual(summary["generation_timeout_count"], 1)
+        self.assertEqual(summary["successful_generation_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
