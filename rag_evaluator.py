@@ -48,9 +48,21 @@ def load_runtime(config: rag_pipeline.RAGConfig) -> EvaluationRuntime:
     """Open the production collection read-only and build its certified BM25 view."""
 
     collection = chromadb.PersistentClient(path=config.chroma_path).get_collection(config.collection_name)
-    embedding_model = SentenceTransformer(config.embedding_model_name)
+    embedding_model = load_offline_embedding_model(config.embedding_model_name)
     bm25, documents, metadatas = rag_pipeline.build_bm25_index(collection, collection.count())
     return EvaluationRuntime(collection, embedding_model, bm25, documents, metadatas, config)
+
+
+def load_offline_embedding_model(model_name: str) -> SentenceTransformer:
+    """Load the production embedding model from local cache without network access."""
+
+    try:
+        return SentenceTransformer(model_name, local_files_only=True)
+    except Exception as error:
+        raise RuntimeError(
+            f"Offline evaluation requires cached embedding model '{model_name}'. "
+            "No model download was attempted."
+        ) from error
 
 
 def language_label(language: str) -> str:

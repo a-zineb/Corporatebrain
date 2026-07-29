@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import rag_evaluator
 import rag_pipeline
@@ -136,6 +137,20 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             "rag_pipeline.stream_generate(", "rag_pipeline.select_display_sources(",
         ):
             self.assertIn(name, source)
+
+    def test_offline_embedding_loader_uses_cached_production_model(self):
+        cached_model = object()
+        with patch("rag_evaluator.SentenceTransformer", return_value=cached_model) as loader:
+            self.assertIs(
+                rag_evaluator.load_offline_embedding_model("paraphrase-multilingual-MiniLM-L12-v2"),
+                cached_model,
+            )
+        loader.assert_called_once_with("paraphrase-multilingual-MiniLM-L12-v2", local_files_only=True)
+
+    def test_offline_embedding_loader_fails_clearly_when_cache_is_missing(self):
+        with patch("rag_evaluator.SentenceTransformer", side_effect=OSError("missing cache")):
+            with self.assertRaisesRegex(RuntimeError, "Offline evaluation requires cached embedding model"):
+                rag_evaluator.load_offline_embedding_model("paraphrase-multilingual-MiniLM-L12-v2")
 
 
 if __name__ == "__main__":
