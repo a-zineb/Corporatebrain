@@ -1,0 +1,42 @@
+{
+  "baseline_version": "corporatebrain.v1",
+  "certification_status": "accepted_phase_2_reference",
+  "judge_mode": "disabled",
+  "fingerprint": {
+    "corpus_sha256": "f5a471db7123789f118a604d4614aa386e8e717e8d1cc61c0cf7fb21ea6e7e75",
+    "metadata_sha256": "a3be7899397f74722d5fa8f4b7cd1e76396bf4498e77987eb8f6b777d21fd0d0",
+    "runtime_sha256": "a2f1ef6963f439d9cb956c2dbbc904d0323a5338025df857af722121437f6e4d",
+    "chunk_count": 1072
+  },
+  "configuration": {
+    "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
+    "llm_model": "qwen3:8b",
+    "vector_candidate_count": 10,
+    "bm25_candidate_count": 10,
+    "rrf_k": 60,
+    "production_top_k": 15,
+    "min_results_before_relax": 3,
+    "generation_max_output_tokens": 256,
+    "generation_stage_timeout_seconds": 120
+  },
+  "metrics": {
+    "recall_at_k": 0.875,
+    "precision_at_k": 0.05277777777777778,
+    "hit_rate_at_k": 0.75,
+    "mrr": 0.5118055555555555,
+    "ndcg_at_k": 0.6974028893347607,
+    "citation_valid": 1.0,
+    "expected_source_match": 0.1111111111111111,
+    "refusal_correct": 0.3333333333333333,
+    "mean_latency_ms": 186587.58386249733
+  },
+  "generation": {
+    "successful_generation_count": 19,
+    "generation_timeout_count": 0
+  },
+  "forensic_categories": {
+    "unexpected_citation_source": 6,
+    "expected_source_missing": 3,
+    "refusal_incorrect": 2
+  }
+}
