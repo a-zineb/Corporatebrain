@@ -13,10 +13,11 @@ import docx
 import fitz  # PyMuPDF
 from sentence_transformers import SentenceTransformer
 import ollama
-from rank_bm25 import BM25Okapi
 import docx2txt
 import olefile
 import struct
+
+import rag_pipeline
 
 # Fonction pour ouvrir un fichier local
 def open_local_file(path):
@@ -71,114 +72,22 @@ except Exception:
 
 @st.cache_resource
 def build_bm25_index(_collection, _count):
-    all_data = collection.get(include=["documents", "metadatas"])
-
-    # Si la base est vide
-    if not all_data["documents"]:
-        return None, None, None
-
-    docs = all_data["documents"]
-
-    # BM25 a besoin de listes de mots (tokens) en minuscules
-    tokenized_corpus = [doc.lower().split() for doc in docs]
-
-    # On initialise l'algorithme
-    bm25 = BM25Okapi(tokenized_corpus)
-
-    return bm25, docs, all_data["metadatas"]
+    return rag_pipeline.build_bm25_index(_collection, _count)
 
 
 def hybrid_search(query, collection, embedding_model, bm25, docs, metadatas, chroma_filter=None, top_k=5,
                    min_results_before_relax=3):
-    """
-    Recherche hybride (vectorielle + BM25 avec fusion RRF).
-    NOUVEAU : si la recherche filtrée renvoie trop peu de résultats, on relance
-    automatiquement une passe "élargie" (sans filtre de Zone/Application) pour
-    proposer des pistes proches plutôt que de rentrer bredouille.
-    Retourne : (docs_filtrés, metas_filtrés, docs_elargis, metas_elargis, relaxed)
-    """
-    def _run(query, chroma_filter, top_k):
-        rrf_scores = {}
-        doc_to_meta = {}
-
-        # ----------------------------------------------------
-        # 1. RECHERCHE VECTORIELLE (Le "Sens")
-        # ----------------------------------------------------
-        query_vector = embedding_model.encode(query).tolist()
-        vec_results = collection.query(query_embeddings=[query_vector], n_results=10, where=chroma_filter)
-
-        if vec_results and vec_results["documents"] and len(vec_results["documents"][0]) > 0:
-            for rank, (doc_text, meta) in enumerate(zip(vec_results["documents"][0], vec_results["metadatas"][0])):
-                rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (rank + 1 + 60))
-                doc_to_meta[doc_text] = meta
-
-        # ----------------------------------------------------
-        # 2. RECHERCHE BM25 (Le mot-clé exact)
-        # ----------------------------------------------------
-        if bm25 is not None and docs is not None:
-            tokenized_query = query.lower().split()
-            bm25_scores = bm25.get_scores(tokenized_query)
-            sorted_indices = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)
-
-            bm25_count = 0
-            for idx in sorted_indices:
-                if bm25_count >= 10:
-                    break
-                if bm25_scores[idx] <= 0:
-                    break
-
-                meta = metadatas[idx]
-
-                if chroma_filter:
-                    match = True
-                    if "$and" in chroma_filter:
-                        for condition in chroma_filter["$and"]:
-                            for k, v in condition.items():
-                                if meta.get(k) != v:
-                                    match = False
-                                    break
-                    else:
-                        for k, v in chroma_filter.items():
-                            if meta.get(k) != v:
-                                match = False
-                                break
-                    if not match:
-                        continue
-
-                doc_text = docs[idx]
-                rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (bm25_count + 1 + 60))
-                doc_to_meta[doc_text] = meta
-                bm25_count += 1
-
-        sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-
-        final_docs, final_metas = [], []
-        for doc_text, score in sorted_docs[:top_k]:
-            final_docs.append(doc_text)
-            final_metas.append(doc_to_meta[doc_text])
-
-        return final_docs, final_metas
-
-    # --- Passe principale (avec filtres actifs) ---
-    filtered_docs, filtered_metas = _run(query, chroma_filter, top_k)
-
-    # --- Passe élargie : uniquement si la passe filtrée est pauvre, et seulement
-    # si un filtre était réellement actif (sinon ça reviendrait au même résultat) ---
-    relaxed_docs, relaxed_metas = [], []
-    relaxed = False
-    if chroma_filter is not None and len(filtered_docs) < min_results_before_relax:
-        relaxed = True
-        relaxed_docs, relaxed_metas = _run(query, None, top_k)
-        # On retire les doublons déjà présents dans les résultats filtrés
-        seen = set(filtered_docs)
-        dedup_docs, dedup_metas = [], []
-        for d, m in zip(relaxed_docs, relaxed_metas):
-            if d not in seen:
-                dedup_docs.append(d)
-                dedup_metas.append(m)
-        relaxed_docs, relaxed_metas = dedup_docs, dedup_metas
-
-    return filtered_docs, filtered_metas, relaxed_docs, relaxed_metas, relaxed
+    return rag_pipeline.hybrid_search(
+        query=query,
+        collection=collection,
+        embedding_model=embedding_model,
+        bm25=bm25,
+        docs=docs,
+        metadatas=metadatas,
+        chroma_filter=chroma_filter,
+        top_k=top_k,
+        min_results_before_relax=min_results_before_relax,
+    ).as_legacy_tuple()
 
 
 # ==========================================
@@ -586,89 +495,37 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             top_k=15
         )
 
-        def build_source_list(chunks, metas, relaxed_flag=False, start_id=1):
-            out = []
-            for i, (doc_text, meta) in enumerate(zip(chunks, metas)):
-                filename = meta.get("source_file", "Fichier source")
-                out.append({
-                    "id": start_id + i,
-                    "file": filename,
-                    "loc": meta.get("location", "N/A"),
-                    "text": doc_text,
-                    "path": os.path.abspath(os.path.join(STORAGE_DIR, filename)),
-                    "relaxed": relaxed_flag
-                })
-            return out
-
-        source_metadata_list = build_source_list(filtered_chunks, filtered_metas, relaxed_flag=False)
-        relaxed_source_list = build_source_list(
-            relaxed_chunks, relaxed_metas, relaxed_flag=True, start_id=len(source_metadata_list) + 1
+        source_metadata_list = rag_pipeline.build_source_list(
+            filtered_chunks, filtered_metas, STORAGE_DIR, relaxed_flag=False
+        )
+        relaxed_source_list = rag_pipeline.build_source_list(
+            relaxed_chunks,
+            relaxed_metas,
+            STORAGE_DIR,
+            relaxed_flag=True,
+            start_id=len(source_metadata_list) + 1,
         )
         all_sources_for_prompt = source_metadata_list + relaxed_source_list
 
         if not source_metadata_list and not relaxed_source_list:
             # Vraiment rien, même en élargissant la recherche : là on peut être honnête,
             # mais on reste dans l'esprit d'ouvrir la discussion plutôt que de la clore.
-            no_match_msg = (
-                "I couldn't find anything close to that in the indexed documents, even outside the current "
-                "filters. Could you rephrase your question, try a related keyword, or tell me the department/"
-                "topic you're aiming for? That would help me point you in the right direction."
-                if current_lang == "English"
-                else "Je n'ai rien trouvé de proche dans les documents indexés, même en élargissant la recherche "
-                     "au-delà des filtres actifs. Peux-tu reformuler ta question, essayer un mot-clé associé, ou "
-                     "me préciser le service/sujet visé ? Ça m'aiderait à t'orienter."
-            )
+            no_match_msg = rag_pipeline.build_no_match_message(current_lang)
             with st.chat_message("assistant"):
                 st.markdown(no_match_msg)
             st.session_state.messages.append({"role": "user", "content": user_query})
             st.session_state.messages.append({"role": "assistant", "content": no_match_msg})
         else:
-            context_chunks_formatted = []
-            for src in all_sources_for_prompt:
-                tag = " (hors des filtres actifs — piste proche)" if src.get("relaxed") else ""
-                context_chunks_formatted.append(f"[SOURCE {src['id']}]{tag}\n{src['text']}")
-            context_str = "\n---\n".join(context_chunks_formatted)
-
-            recent_chat_history = ""
-            for m in st.session_state.messages[-4:]:
-                role = "Utilisateur" if m["role"] == "user" else "Assistant"
-                recent_chat_history += f"{role}: {m['content']}\n"
-
-            relaxed_note = (
-                "\nNOTE IMPORTANTE : certaines sources ci-dessus sont marquées '(hors des filtres actifs — piste "
-                "proche)'. Elles ne correspondent pas exactement aux filtres Zone/Application sélectionnés, mais "
-                "peuvent constituer une piste utile à proposer à l'utilisateur (mentionne-le clairement, par "
-                "exemple : \"je n'ai rien trouvé pile dans [filtre], mais j'ai trouvé quelque chose de proche dans "
-                "[autre catégorie], est-ce que ça pourrait t'intéresser ?\")."
-                if was_relaxed else ""
+            prompt_result = rag_pipeline.build_production_prompt(
+                user_query=user_query,
+                filter_ent=filter_ent,
+                filter_application=filter_application,
+                history=st.session_state.messages,
+                sources=all_sources_for_prompt,
+                current_lang=current_lang,
+                was_relaxed=was_relaxed,
             )
-
-            prompt_instructions = f"""Tu es l'assistant technique d'entreprise 'Corporate Brain'. Ton ton est celui d'un collègue serviable qui engage la discussion, pas celui d'un moteur de recherche binaire qui répond juste "trouvé" ou "pas trouvé".
-
-PROJET & FILTRES ACTIFS :
-- Zone Géographique (Filiale) : {filter_ent}
-- Application : {filter_application}
-
-HISTORIQUE RÉCENT DE LA CONVERSATION :
-{recent_chat_history}
-
-CONTEXTE DOCUMENTAIRE :
-{context_str}
-{relaxed_note}
-
-DERNIÈRE QUESTION DE L'UTILISATEUR :
-{user_query}
-
-INSTRUCTIONS :
-1. Si l'information exacte demandée est présente dans le CONTEXTE, réponds directement et cite la ou les sources au format [SOURCE X].
-2. Si l'information exacte n'est pas présente mais que tu repères des éléments proches, apparentés, ou des synonymes/catégories voisines dans le CONTEXTE (par exemple : l'utilisateur cherche "département IT" et tu trouves des mentions de "Technologie", "Informatique", "Systèmes d'Information", ou un acronyme lié), NE REFUSE PAS SÈCHEMENT. Propose plutôt ces pistes de façon naturelle et conversationnelle, en citant leur source [SOURCE X], et explique en quoi elles pourraient correspondre à la demande.
-3. Tu as le droit de faire des rapprochements logiques entre plusieurs fragments du CONTEXTE pour construire ta réponse ou tes suggestions.
-4. Termine par une question ouverte ou une invitation à préciser si tu n'es pas sûr à 100% (ex : "Est-ce que ça correspond à ce que tu cherches ?" ou "Veux-tu que je regarde plus précisément du côté de X ?"), afin d'entretenir la discussion plutôt que de la clore abruptement.
-5. Utilise uniquement les informations du CONTEXTE DOCUMENTAIRE ci-dessus (pas de connaissances externes/génériques), mais reste ouvert et exploratoire avec ce qui s'y trouve plutôt que strictement littéral.
-6. Ne dis "je n'ai rien trouvé" que si le CONTEXTE ne contient vraiment rien qui se rapporche même de loin au sujet de la question — et dans ce cas, propose quand même une piste (reformulation, mot-clé à essayer, ou filtre à changer) plutôt que de t'arrêter là.
-7. Ne fais aucune remarque sur ton identité d'IA ou tes limites de date.
-8. Réponds dans la même langue que la question de l'utilisateur ({current_lang}).
-"""
+            prompt_instructions = prompt_result.prompt
             with st.chat_message("assistant"):
                 response_placeholder = st.empty()
                 full_stream_response = ""
@@ -688,80 +545,34 @@ INSTRUCTIONS :
                             response_placeholder.markdown(full_stream_response + "▌")
                     response_placeholder.markdown(full_stream_response)
 
-                    # Extraire les citations [SOURCE X] de la réponse de l'IA
-                    cited_ids = [int(num) for num in re.findall(r'\[SOURCE (\d+)\]', full_stream_response)]
-                    cited_ids = list(set(cited_ids))
-
-                    # Une réponse qui indique explicitement que l'information n'est pas
-                    # couverte par les documents ne doit pas afficher de ressources,
-                    # même si le modèle a ajouté des balises de citation.
-                    response_lower = full_stream_response.lower()
-                    no_coverage_patterns = [
-                        r"je ne trouve pas.*(document|contexte|source|corpus)",
-                        r"n.est pas.*(document|contexte|source|corpus)",
-                        r"information.*(non couverte|absente|indisponible)",
-                        r"le contexte( fourni)? ne contient aucune information",
-                        r"le contexte fourni ne contient pas",
-                        r"les documents ne contiennent aucune information",
-                        r"ne trouve pas de r.ponse dans le contexte( fourni)?",
-                        r"la question pos.e ne trouve pas de r.ponse dans le contexte( fourni)?",
-                        r"ne trouve pas de r.ponse dans les documents",
-                        r"n.est pas mentionn. dans les documents",
-                        r"n.est pas abord. dans les documents",
-                        r"l.information n.est pas pr.sente dans les documents",
-                        r"(i cannot|i can.t|not found|not covered).*(document|context|source|corpus)",
-                        r"(not mentioned|not available).*(document|context|source|corpus)",
-                    ]
-                    no_documentary_answer = any(
-                        re.search(pattern, response_lower, flags=re.DOTALL)
-                        for pattern in no_coverage_patterns
+                    citation_result = rag_pipeline.select_display_sources(
+                        full_stream_response,
+                        all_sources_for_prompt,
                     )
-
-                    # Si l'IA a cité des sources, on filtre.
-                    # Sinon, aucune source n'est affichée.
-                    display_sources = []
-
-                    if no_documentary_answer:
-                        display_sources = []
-                    elif cited_ids:
-                        display_sources = [
-                            src for src in all_sources_for_prompt
-                            if src["id"] in cited_ids
-                        ]
-
-                    # DEBUG TEMPORAIRE
-                    print("\n========== SOURCES DEBUG ==========")
-                    print("ALL SOURCES:", len(all_sources_for_prompt))
-                    print("CITED IDS:", cited_ids)
-                    print("DISPLAY SOURCES:", len(display_sources))
-
-                    print("\n--- ALL SOURCES ---")
-                    for src in all_sources_for_prompt:
-                        print(
-                            "ID:", src["id"],
-                            "| File:", src["file"],
-                            "| Location:", src["loc"],
-                            "| Text:", src["text"][:200],
-                            "| Path:", src["path"],
-                            "| Relaxed:", src["relaxed"]
+                    display_sources = [
+                        {
+                            "id": source.source_id,
+                            "file": source.file_name,
+                            "loc": source.location,
+                            "text": source.text,
+                            "path": source.path,
+                            "relaxed": source.relaxed,
+                        }
+                        for source in citation_result.display_sources
+                    ]
+                    unique_sources = {
+                        source.path: {
+                            "id": source.source_id,
+                            "file": source.file_name,
+                            "loc": source.location,
+                            "text": source.text,
+                            "path": source.path,
+                            "relaxed": source.relaxed,
+                        }
+                        for source in rag_pipeline.deduplicate_sources_by_path(
+                            citation_result.display_sources
                         )
-
-                    print("\n--- DISPLAY SOURCES ---")
-                    for src in display_sources:
-                        print(
-                            "ID:", src["id"],
-                            "| File:", src["file"],
-                            "| Location:", src["loc"],
-                            "| Text:", src["text"][:200],
-                            "| Path:", src["path"],
-                            "| Relaxed:", src["relaxed"]
-                        )
-
-                    print("===================================\n")
-                    unique_sources = {}
-                    for src in display_sources:
-                        if src["path"] not in unique_sources:
-                            unique_sources[src["path"]] = src
+                    }
 
                     with st.expander(" Ressources consultées"):
                         if not unique_sources:

@@ -5,38 +5,20 @@ from __future__ import annotations
 import ast
 import copy
 import os
-from pathlib import Path
 import re
 import unittest
 
 import rag_pipeline
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
+from baseline_app_reference import assignment_nodes as baseline_assignment_nodes
+from baseline_app_reference import execute_assignment
+from baseline_app_reference import tree as baseline_tree
 
 def app_tree():
-    return ast.parse((PROJECT_ROOT / "app.py").read_text(encoding="utf-8"))
+    return baseline_tree()
 
 
 def assignment_nodes(name):
-    return sorted(
-        [
-            node
-            for node in ast.walk(app_tree())
-            if isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
-        ],
-        key=lambda node: node.lineno,
-    )
-
-
-def execute_assignment(name, namespace, occurrence=0):
-    node = copy.deepcopy(assignment_nodes(name)[occurrence])
-    module = ast.Module(body=[node], type_ignores=[])
-    ast.fix_missing_locations(module)
-    exec(compile(module, "app.py", "exec"), namespace)
-    return namespace[name]
+    return baseline_assignment_nodes(name)
 
 
 def load_legacy_source_builder():

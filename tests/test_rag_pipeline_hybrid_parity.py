@@ -5,15 +5,12 @@ from __future__ import annotations
 import ast
 import copy
 import json
-from pathlib import Path
 import unittest
 
 from rank_bm25 import BM25Okapi
 
 import rag_pipeline
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from baseline_app_reference import source as baseline_source
 
 
 def filter_key(value):
@@ -29,7 +26,7 @@ def load_traced_legacy_hybrid_search(trace):
     they do not replace, reorder, or otherwise alter its retrieval operations.
     """
 
-    app_source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+    app_source = baseline_source()
     tree = ast.parse(app_source)
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "hybrid_search")
     source = ast.get_source_segment(app_source, function)

@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import ast
-import copy
-from pathlib import Path
 import unittest
 
 from rank_bm25 import BM25Okapi
 
 import rag_pipeline
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from baseline_app_reference import top_level_function
 
 
 class FakeCollection:
@@ -44,19 +39,6 @@ class FakeEmbeddingVector:
         return [0.0, 1.0]
 
 
-def load_legacy_function(name, namespace):
-    """Load one exact function definition from app.py without importing it."""
-
-    app_tree = ast.parse((PROJECT_ROOT / "app.py").read_text(encoding="utf-8"))
-    function = next(node for node in app_tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
-    function = copy.deepcopy(function)
-    function.decorator_list = []
-    module = ast.Module(body=[function], type_ignores=[])
-    ast.fix_missing_locations(module)
-    exec(compile(module, "app.py", "exec"), namespace)
-    return namespace[name]
-
-
 class BM25ParityTests(unittest.TestCase):
     """Compare shared helpers with the legacy code currently in app.py."""
 
@@ -76,7 +58,7 @@ class BM25ParityTests(unittest.TestCase):
         self.collection = FakeCollection(self.documents, self.metadatas)
 
     def test_bm25_construction_matches_legacy_order_tokenization_and_scores(self):
-        legacy_build = load_legacy_function(
+        legacy_build = top_level_function(
             "build_bm25_index",
             {"BM25Okapi": BM25Okapi, "collection": self.collection},
         )
@@ -102,7 +84,7 @@ class BM25ParityTests(unittest.TestCase):
 
     def test_empty_corpus_matches_legacy_none_contract(self):
         empty_collection = FakeCollection([], [])
-        legacy_build = load_legacy_function(
+        legacy_build = top_level_function(
             "build_bm25_index",
             {"BM25Okapi": BM25Okapi, "collection": empty_collection},
         )
@@ -111,7 +93,7 @@ class BM25ParityTests(unittest.TestCase):
         self.assertEqual(rag_pipeline.build_bm25_index(empty_collection, 0), (None, None, None))
 
     def test_single_and_and_filter_outcomes_match_legacy_hybrid_search(self):
-        legacy_hybrid_search = load_legacy_function("hybrid_search", {})
+        legacy_hybrid_search = top_level_function("hybrid_search", {})
         bm25 = BM25Okapi([doc.lower().split() for doc in self.documents])
         filters = [
             {"application": "KPSA"},
