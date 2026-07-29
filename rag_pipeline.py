@@ -423,6 +423,10 @@ def hybrid_search(
     chroma_filter: MetadataFilter | None = None,
     top_k: int = 5,
     min_results_before_relax: int = 3,
+    vector_candidate_count: int = 10,
+    bm25_candidate_count: int = 10,
+    fusion_depth: int = 10,
+    rrf_k: int = 60,
 ) -> HybridSearchResult:
     """Run the current vector/BM25/RRF search without changing its behavior.
 
@@ -441,12 +445,12 @@ def hybrid_search(
         query_vector = embedding_model.encode(query).tolist()
         vector_query = VectorQueryCall(
             query_embeddings=(tuple(query_vector),),
-            n_results=10,
+            n_results=vector_candidate_count,
             metadata_filter=active_filter,
         )
         vec_results = collection.query(
             query_embeddings=[query_vector],
-            n_results=10,
+            n_results=vector_candidate_count,
             where=active_filter,
         )
 
@@ -462,7 +466,8 @@ def hybrid_search(
                 distance = vector_distances[0][rank] if vector_distances and len(vector_distances[0]) > rank else None
                 chunk = ChunkRecord(text=doc_text, metadata=meta, chunk_id=chunk_id)
                 vector_candidates.append(VectorCandidate(chunk=chunk, rank=rank, distance=distance))
-                rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (rank + 1 + 60))
+                if rank < fusion_depth:
+                    rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (rank + 1 + rrf_k))
                 doc_to_meta[doc_text] = meta
                 vector_ranks[doc_text] = rank
 
@@ -474,7 +479,7 @@ def hybrid_search(
 
             bm25_count = 0
             for index in sorted_indices:
-                if bm25_count >= 10:
+                if bm25_count >= bm25_candidate_count:
                     break
                 if bm25_scores[index] <= 0:
                     break
@@ -486,7 +491,8 @@ def hybrid_search(
                 doc_text = docs[index]
                 chunk = ChunkRecord(text=doc_text, metadata=meta)
                 bm25_candidates.append(BM25Candidate(chunk=chunk, rank=bm25_count, score=float(bm25_scores[index])))
-                rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (bm25_count + 1 + 60))
+                if bm25_count < fusion_depth:
+                    rrf_scores[doc_text] = rrf_scores.get(doc_text, 0) + (1 / (bm25_count + 1 + rrf_k))
                 doc_to_meta[doc_text] = meta
                 bm25_ranks[doc_text] = bm25_count
                 bm25_count += 1

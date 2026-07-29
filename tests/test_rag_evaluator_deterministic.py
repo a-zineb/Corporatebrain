@@ -252,6 +252,18 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(audit["filtered_query_outcomes"]["case_count"], 1)
         self.assertEqual(audit["fallback_activation"]["fallback_used_count"], 1)
 
+    def test_fixed_experiment_matrix_preserves_control_and_reports_variants(self):
+        matrix = rag_evaluator.fixed_experiment_matrix(self.runtime.config)
+        self.assertEqual(matrix[0], rag_evaluator.certified_control(self.runtime.config))
+        report = rag_evaluator.run_experiment_matrix(
+            [case_for(self.content_hash)], self.runtime, FakeGenerator("Answer [SOURCE 1]"), matrix
+        )
+        self.assertEqual(report["control"], "control")
+        self.assertEqual(report["variants"]["control"]["configuration"]["final_top_k"], 15)
+        self.assertIn("recall_at_k", report["variants"]["fusion_depth_5"]["metrics"])
+        self.assertIn("fallback_rate", report["variants"]["fallback_threshold_5"])
+        self.assertIn("forensic_counts", report["variants"]["candidate_depth_20"])
+
 
 if __name__ == "__main__":
     unittest.main()

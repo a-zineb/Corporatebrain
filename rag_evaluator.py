@@ -40,6 +40,39 @@ class EvaluationRuntime:
     config: rag_pipeline.RAGConfig
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalExperiment:
+    """A fixed evaluator-only retrieval variant; production remains the control."""
+
+    name: str
+    vector_candidate_count: int
+    bm25_candidate_count: int
+    final_top_k: int
+    fusion_depth: int
+    fallback_threshold: int
+    rrf_k: int = 60
+
+
+def certified_control(config: rag_pipeline.RAGConfig) -> RetrievalExperiment:
+    """Represent the approved production configuration without changing it."""
+
+    return RetrievalExperiment("control", config.vector_candidate_count, config.bm25_candidate_count,
+        config.production_top_k, config.vector_candidate_count, config.min_results_before_relax, config.rrf_k)
+
+
+def fixed_experiment_matrix(config: rag_pipeline.RAGConfig) -> tuple[RetrievalExperiment, ...]:
+    """Return reviewed fixed variants; this function never selects a winner."""
+
+    control = certified_control(config)
+    return (
+        control,
+        RetrievalExperiment("candidate_depth_20", 20, 20, control.final_top_k, 20, control.fallback_threshold),
+        RetrievalExperiment("final_top_k_10", control.vector_candidate_count, control.bm25_candidate_count, 10, control.fusion_depth, control.fallback_threshold),
+        RetrievalExperiment("fusion_depth_5", control.vector_candidate_count, control.bm25_candidate_count, control.final_top_k, 5, control.fallback_threshold),
+        RetrievalExperiment("fallback_threshold_5", control.vector_candidate_count, control.bm25_candidate_count, control.final_top_k, control.fusion_depth, 5),
+    )
+
+
 class StageTimeoutError(TimeoutError):
     """Evaluator-only timeout that identifies the stage which exceeded its limit."""
 
@@ -176,15 +209,17 @@ def evaluate_case(
     *,
     clock: Callable[[], float] = time.perf_counter,
     stage_timeout_seconds: float = 120.0,
+    experiment: RetrievalExperiment | None = None,
 ) -> dict[str, Any]:
     """Execute one benchmark case exclusively through certified pipeline calls."""
 
     started = clock()
+    experiment = experiment or certified_control(runtime.config)
     stage_timings: dict[str, float] = {}
     try:
         rewrite, stage_timings["query_rewriting"] = run_stage("query_rewriting", lambda: rag_pipeline.rewrite_query(case["question"], case["conversation"], runtime.config.llm_model_name, generator, clock=clock), stage_timeout_seconds, clock=clock)
         metadata_filter = rag_pipeline.normalize_chroma_filter(case["metadata_filter"])
-        hybrid, stage_timings["vector_retrieval_bm25_rrf"] = run_stage("vector_retrieval_bm25_rrf", lambda: rag_pipeline.hybrid_search(rewrite.query, runtime.collection, runtime.embedding_model, runtime.bm25, runtime.documents, runtime.metadatas, chroma_filter=metadata_filter, top_k=runtime.config.production_top_k, min_results_before_relax=runtime.config.min_results_before_relax), stage_timeout_seconds, clock=clock)
+        hybrid, stage_timings["vector_retrieval_bm25_rrf"] = run_stage("vector_retrieval_bm25_rrf", lambda: rag_pipeline.hybrid_search(rewrite.query, runtime.collection, runtime.embedding_model, runtime.bm25, runtime.documents, runtime.metadatas, chroma_filter=metadata_filter, top_k=experiment.final_top_k, min_results_before_relax=experiment.fallback_threshold, vector_candidate_count=experiment.vector_candidate_count, bm25_candidate_count=experiment.bm25_candidate_count, fusion_depth=experiment.fusion_depth, rrf_k=experiment.rrf_k), stage_timeout_seconds, clock=clock)
     except StageTimeoutError as error:
         return timeout_result(case, error, started, stage_timings, clock)
     filtered_sources = rag_pipeline.build_source_list(
@@ -225,7 +260,7 @@ def evaluate_case(
             generation = rag_pipeline.GenerationResult(error=str(error))
             failure = {"code": "generation_error", "message": str(error)}
 
-    metrics = retrieval_metrics(sources, case["relevance"], runtime.config.production_top_k)
+    metrics = retrieval_metrics(sources, case["relevance"], experiment.final_top_k)
     metrics.update(citation_metrics(citations, case["acceptable_citations"]))
     expected_mode = case["expected_behavior"]["mode"]
     metrics["refusal_correct"] = (
@@ -259,6 +294,7 @@ def evaluate_case(
     )
     return {
         "case_id": case["id"],
+        "experiment": experiment.name,
         "language": case["language"],
         "query_type": case["category"],
         "metadata_filter_state": "filtered" if metadata_filter else "unfiltered",
@@ -269,6 +305,34 @@ def evaluate_case(
         "trace": trace,
         "stage_timings_ms": stage_timings,
     }
+
+
+def experiment_summary(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Report comparable metrics and forensic counts without promoting a winner."""
+
+    serialized = [result_to_json(result) for result in results]
+    counts: dict[str, int] = {}
+    for result in serialized:
+        category = str(result.get("forensic_category", "unknown"))
+        counts[category] = counts.get(category, 0) + 1
+    fallback_rate = (sum(bool(result["trace"].get("fallback_used")) for result in serialized) / len(serialized)) if serialized else 0.0
+    return {"metrics": aggregate(serialized), "fallback_rate": fallback_rate, "forensic_counts": counts}
+
+
+def run_experiment_matrix(
+    cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
+    experiments: Sequence[RetrievalExperiment], *, stage_timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Evaluate fixed variants through the certified runtime; no winner is selected."""
+
+    reports = {}
+    for experiment in experiments:
+        results = [evaluate_case(case, runtime, generator, stage_timeout_seconds=stage_timeout_seconds, experiment=experiment) for case in cases]
+        reports[experiment.name] = {
+            "configuration": {"vector_candidate_count": experiment.vector_candidate_count, "bm25_candidate_count": experiment.bm25_candidate_count, "final_top_k": experiment.final_top_k, "fusion_depth": experiment.fusion_depth, "fallback_threshold": experiment.fallback_threshold, "rrf_k": experiment.rrf_k},
+            **experiment_summary(results),
+        }
+    return {"control": certified_control(runtime.config).name, "variants": reports}
 
 
 def timeout_result(case: Mapping[str, Any], error: StageTimeoutError, started: float, stage_timings: Mapping[str, float], clock: Callable[[], float]) -> dict[str, Any]:
@@ -329,7 +393,7 @@ def result_to_json(result: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(result.get("trace"), Mapping):
         return dict(result)
     return {
-        "case_id": result["case_id"], "language": result["language"],
+        "case_id": result["case_id"], "experiment": result.get("experiment", "control"), "language": result["language"],
         "query_type": result["query_type"], "metadata_filter_state": result["metadata_filter_state"],
         "answerability": result["answerability"],
         "expected_behavior": result["expected_behavior"], "metrics": result["metrics"],
@@ -546,6 +610,7 @@ def main() -> None:
     parser.add_argument("--stage-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--limit-cases", type=int)
     parser.add_argument("--max-generation-tokens", type=int, default=256)
+    parser.add_argument("--experiment-matrix", action="store_true", help="Run fixed evaluator-only retrieval variants.")
     args = parser.parse_args()
     config = rag_pipeline.RAGConfig()
     runtime = load_runtime(config, stage_timeout_seconds=args.stage_timeout_seconds)
@@ -560,6 +625,9 @@ def main() -> None:
         case_timeout_seconds=args.case_timeout_seconds, stage_timeout_seconds=args.stage_timeout_seconds,
     )
     write_metadata_filter_audit(active_cases, runtime, results, output_dir)
+    if args.experiment_matrix:
+        matrix = run_experiment_matrix(active_cases, runtime, evaluator_generator, fixed_experiment_matrix(config), stage_timeout_seconds=args.stage_timeout_seconds)
+        (output_dir / "retrieval_experiments.json").write_text(json.dumps(matrix, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.judge:
         judge = rag_judge.LocalOllamaJudgeAdapter(
             ollama, config.llm_model_name, args.judge_timeout_seconds
