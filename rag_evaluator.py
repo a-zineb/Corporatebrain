@@ -350,6 +350,13 @@ def trace_to_json(trace: rag_pipeline.PipelineTrace) -> dict[str, Any]:
         "rewritten_query": trace.rewritten_query,
         "metadata_filter": trace.metadata_filter,
         "selected_chunks": [chunk.text for chunk in retrieval.filtered_chunks] if retrieval else [],
+        "candidate_pool": [
+            {"content_sha256": hashlib.sha256(candidate.chunk.text.encode("utf-8")).hexdigest(), "source": "vector", "rank": candidate.rank + 1}
+            for candidate in retrieval.vector_candidates
+        ] + [
+            {"content_sha256": hashlib.sha256(candidate.chunk.text.encode("utf-8")).hexdigest(), "source": "bm25", "rank": candidate.rank + 1}
+            for candidate in retrieval.bm25_candidates
+        ] if retrieval else [],
         "fallback_chunks": [chunk.text for chunk in retrieval.fallback_chunks] if retrieval else [],
         "fallback_used": retrieval.fallback_used if retrieval else False,
         "response": trace.generation.response if trace.generation else "",
@@ -492,6 +499,63 @@ def write_metadata_filter_audit(
     )
 
 
+def reranking_opportunity_diagnostics(
+    benchmark_cases: Sequence[Mapping[str, Any]], results: Sequence[Mapping[str, Any]],
+    metadatas: Sequence[rag_pipeline.Metadata] | None,
+) -> dict[str, Any]:
+    """Identify ranking-only misses from certified retrieval traces without reranking."""
+
+    audit = metadata_filter_audit(benchmark_cases, metadatas, [])
+    issue_cases = {item["case_id"] for item in audit["benchmark_filter_coverage"]["conditions"] if item["status"] != "mapped"}
+    cases_by_id = {case["id"]: case for case in benchmark_cases}
+    opportunities = []
+    candidate_recalls = []
+    selected_recalls = []
+    answerable_count = 0
+    for raw in results:
+        result = result_to_json(raw)
+        case = cases_by_id.get(result["case_id"])
+        if not case or case["answerability"] != "answerable":
+            continue
+        answerable_count += 1
+        expected = {item["content_sha256"] for item in case["relevance"] if item["label"] > 0}
+        pool = result["trace"].get("candidate_pool", [])
+        pool_hashes = {item["content_sha256"] for item in pool}
+        selected_hashes = {hashlib.sha256(text.encode("utf-8")).hexdigest() for text in result["trace"].get("selected_chunks", [])}
+        candidate_recall = len(expected & pool_hashes) / len(expected) if expected else 1.0
+        selected_recall = len(expected & selected_hashes) / len(expected) if expected else 1.0
+        candidate_recalls.append(candidate_recall)
+        selected_recalls.append(selected_recall)
+        if expected & pool_hashes and not expected & selected_hashes and result["case_id"] not in issue_cases:
+            ranks = [item for item in pool if item["content_sha256"] in expected]
+            opportunities.append({
+                "case_id": result["case_id"], "candidate_ranks": ranks,
+                "candidate_pool_recall": candidate_recall, "selected_context_recall": selected_recall,
+                "exclusion_reason": "relevant_candidate_ranked_below_final_context_cutoff",
+            })
+    opportunity_rate = len(opportunities) / answerable_count if answerable_count else 0.0
+    pool_recall = sum(candidate_recalls) / len(candidate_recalls) if candidate_recalls else 0.0
+    selected_recall = sum(selected_recalls) / len(selected_recalls) if selected_recalls else 0.0
+    gates = {
+        "candidate_opportunity": {"met": len(opportunities) >= 3 and opportunity_rate >= 0.10, "threshold": "at least 3 cases and 10% of answerable cases"},
+        "ranking_potential": {"met": pool_recall - selected_recall >= 0.10, "threshold": "candidate-pool recall exceeds selected-context recall by at least 0.10"},
+        "filter_hygiene": {"met": True, "threshold": "affected cases have no stale or unmapped benchmark filter condition"},
+        "matrix_exhaustion": {"met": "NOT_EVALUATED", "threshold": "requires full fixed-matrix evidence"},
+        "baseline_protection": {"met": "NOT_EVALUATED", "threshold": "requires a reranking experiment"},
+    }
+    return {"answerable_case_count": answerable_count, "candidate_pool_recall": pool_recall, "selected_context_recall": selected_recall, "opportunity_count": len(opportunities), "opportunity_percentage": opportunity_rate, "affected_cases": opportunities, "gates": gates, "reranking_recommendation": "not_ready_pending_matrix_and_reranker_evidence"}
+
+
+def write_reranking_opportunity_diagnostics(
+    benchmark_cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime,
+    results: Sequence[Mapping[str, Any]], output_dir: Path,
+) -> None:
+    """Write read-only reranking opportunity evidence beside evaluator reports."""
+
+    payload = reranking_opportunity_diagnostics(benchmark_cases, results, runtime.metadatas)
+    (output_dir / "reranking_opportunities.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def load_checkpoint(output_dir: Path) -> list[dict[str, Any]]:
     """Load completed case records from an evaluator-owned checkpoint."""
 
@@ -625,6 +689,7 @@ def main() -> None:
         case_timeout_seconds=args.case_timeout_seconds, stage_timeout_seconds=args.stage_timeout_seconds,
     )
     write_metadata_filter_audit(active_cases, runtime, results, output_dir)
+    write_reranking_opportunity_diagnostics(active_cases, runtime, results, output_dir)
     if args.experiment_matrix:
         matrix = run_experiment_matrix(active_cases, runtime, evaluator_generator, fixed_experiment_matrix(config), stage_timeout_seconds=args.stage_timeout_seconds)
         (output_dir / "retrieval_experiments.json").write_text(json.dumps(matrix, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -264,6 +264,23 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertIn("fallback_rate", report["variants"]["fallback_threshold_5"])
         self.assertIn("forensic_counts", report["variants"]["candidate_depth_20"])
 
+    def test_reranking_opportunities_identify_ranking_only_misses(self):
+        relevant_hash = self.content_hash
+        case = case_for(relevant_hash)
+        result = {
+            "case_id": "case-1", "metrics": {}, "trace": {
+                "candidate_pool": [{"content_sha256": relevant_hash, "source": "vector", "rank": 12}],
+                "selected_chunks": ["other policy"],
+            },
+        }
+        opportunities = rag_evaluator.reranking_opportunity_diagnostics(
+            [case], [result], [{"application": "KPSA"}]
+        )
+        self.assertEqual(opportunities["opportunity_count"], 1)
+        self.assertEqual(opportunities["affected_cases"][0]["candidate_ranks"][0]["rank"], 12)
+        self.assertEqual(opportunities["affected_cases"][0]["exclusion_reason"], "relevant_candidate_ranked_below_final_context_cutoff")
+        self.assertFalse(opportunities["gates"]["candidate_opportunity"]["met"])
+
 
 if __name__ == "__main__":
     unittest.main()
