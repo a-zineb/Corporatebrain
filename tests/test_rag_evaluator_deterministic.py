@@ -236,6 +236,22 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(segments["fallback_usage"]["used"]["case_count"], 1)
         self.assertIn("passed", segments["forensic_category"])
 
+    def test_metadata_filter_audit_identifies_coverage_and_filtered_outcomes(self):
+        case = case_for(self.content_hash)
+        case["metadata_filter"] = {"application": "Unknown", "stale": "missing"}
+        result = rag_evaluator.evaluate_case(case, self.runtime, FakeGenerator("Answer [SOURCE 1]"))
+        audit = rag_evaluator.metadata_filter_audit(
+            [case],
+            [{"application": "KPSA", "region": "OCM"}, {"application": "MZ"}],
+            [result],
+        )
+        self.assertEqual(audit["active_metadata"]["fields"]["application"]["missing_count"], 0)
+        self.assertEqual(audit["inconsistent_metadata"]["region"]["missing_count"], 1)
+        self.assertEqual(audit["benchmark_filter_coverage"]["unmapped_field_count"], 1)
+        self.assertEqual(audit["benchmark_filter_coverage"]["stale_value_count"], 1)
+        self.assertEqual(audit["filtered_query_outcomes"]["case_count"], 1)
+        self.assertEqual(audit["fallback_activation"]["fallback_used_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

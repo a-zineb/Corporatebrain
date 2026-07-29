@@ -369,6 +369,65 @@ def segmented_diagnostics(cases: Sequence[Mapping[str, Any]]) -> dict[str, dict[
     return report
 
 
+def metadata_filter_audit(
+    benchmark_cases: Sequence[Mapping[str, Any]],
+    metadatas: Sequence[rag_pipeline.Metadata] | None,
+    results: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Audit metadata and filter outcomes using existing collection and trace data only."""
+
+    rows = list(metadatas or [])
+    fields = sorted({str(key) for metadata in rows for key in metadata})
+    values = {field: {json.dumps(metadata[field], ensure_ascii=False, sort_keys=True) for metadata in rows if field in metadata} for field in fields}
+    missing = {field: sum(field not in metadata or metadata[field] in (None, "") for metadata in rows) for field in fields}
+    types = {field: sorted({type(metadata[field]).__name__ for metadata in rows if field in metadata}) for field in fields}
+    inconsistent = {
+        field: {"missing_count": missing[field], "value_types": types[field]}
+        for field in fields if missing[field] or len(types[field]) > 1
+    }
+    conditions = []
+    for case in benchmark_cases:
+        for key, value in (case.get("metadata_filter") or {}).items():
+            status = "mapped"
+            if key not in values:
+                status = "unmapped_field"
+            elif json.dumps(value, ensure_ascii=False, sort_keys=True) not in values[key]:
+                status = "stale_value"
+            conditions.append({"case_id": case["id"], "field": key, "value": value, "status": status})
+    serialized = [result_to_json(result) for result in results]
+    filtered = [result for result in serialized if result.get("metadata_filter_state") == "filtered"]
+    fallback_used = sum(bool(result["trace"].get("fallback_used")) for result in filtered)
+    return {
+        "active_metadata": {
+            "chunk_count": len(rows), "fields": {
+                field: {"values": sorted(values[field]), "missing_count": missing[field], "value_types": types[field]}
+                for field in fields
+            },
+        },
+        "benchmark_filter_coverage": {
+            "filtered_case_count": sum(bool(case.get("metadata_filter")) for case in benchmark_cases),
+            "conditions": conditions,
+            "unmapped_field_count": sum(item["status"] == "unmapped_field" for item in conditions),
+            "stale_value_count": sum(item["status"] == "stale_value" for item in conditions),
+        },
+        "inconsistent_metadata": inconsistent,
+        "filtered_query_outcomes": {"case_count": len(filtered), "metrics": aggregate(filtered)},
+        "fallback_activation": {"filtered_case_count": len(filtered), "fallback_used_count": fallback_used},
+    }
+
+
+def write_metadata_filter_audit(
+    benchmark_cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime,
+    results: Sequence[Mapping[str, Any]], output_dir: Path,
+) -> None:
+    """Write the evaluator-owned metadata audit beside other ignored reports."""
+
+    audit = metadata_filter_audit(benchmark_cases, runtime.metadatas, results)
+    (output_dir / "metadata_audit.json").write_text(
+        json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def load_checkpoint(output_dir: Path) -> list[dict[str, Any]]:
     """Load completed case records from an evaluator-owned checkpoint."""
 
@@ -494,10 +553,13 @@ def main() -> None:
         parser.error("--max-generation-tokens must be greater than zero")
     evaluator_generator = EvaluatorGenerationBudget(ollama, args.max_generation_tokens)
     output_dir = args.output_dir or DEFAULT_RUNS_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    benchmark_cases = load_cases(args.benchmark)
+    active_cases = benchmark_cases[:args.limit_cases] if args.limit_cases else benchmark_cases
     results = run_cases(
-        load_cases(args.benchmark)[:args.limit_cases] if args.limit_cases else load_cases(args.benchmark), runtime, evaluator_generator, output_dir, resume=args.resume,
+        active_cases, runtime, evaluator_generator, output_dir, resume=args.resume,
         case_timeout_seconds=args.case_timeout_seconds, stage_timeout_seconds=args.stage_timeout_seconds,
     )
+    write_metadata_filter_audit(active_cases, runtime, results, output_dir)
     if args.judge:
         judge = rag_judge.LocalOllamaJudgeAdapter(
             ollama, config.llm_model_name, args.judge_timeout_seconds
