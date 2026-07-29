@@ -17,6 +17,7 @@ import ollama
 from sentence_transformers import SentenceTransformer
 
 import rag_forensics
+import rag_judge
 import rag_pipeline
 
 
@@ -281,18 +282,72 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> Non
             )
 
 
+def evaluate_judge_results(
+    results: Sequence[Mapping[str, Any]],
+    cases: Sequence[Mapping[str, Any]],
+    judge: rag_judge.JudgeAdapter,
+) -> list[dict[str, Any]]:
+    """Evaluate completed traces without changing their deterministic metrics."""
+
+    cases_by_id = {case["id"]: case for case in cases}
+    outcomes = []
+    for result in results:
+        case = cases_by_id[result["case_id"]]
+        retrieval = result["trace"].retrieval
+        contexts = [chunk.text for chunk in retrieval.filtered_chunks + retrieval.fallback_chunks] if retrieval else []
+        outcome = judge.evaluate(
+            question=result["trace"].query,
+            answer=result["response"],
+            contexts=contexts,
+            reference_answer=case.get("expected_answer"),
+        )
+        outcomes.append({"case_id": result["case_id"], "outcome": outcome.to_json()})
+    return outcomes
+
+
+def write_judge_reports(outcomes: Sequence[Mapping[str, Any]], output_dir: Path) -> None:
+    """Write separate optional-judge artifacts beside deterministic reports."""
+
+    scored = [item["outcome"] for item in outcomes if item["outcome"]["status"] == "SCORED"]
+    summary = {
+        "scored_cases": len(scored),
+        "not_run_cases": len(outcomes) - len(scored),
+        "metrics": {
+            name: (sum(item["metrics"][name] for item in scored) / len(scored) if scored else None)
+            for name in rag_judge.JUDGE_METRICS
+        },
+    }
+    (output_dir / "judge_cases.json").write_text(
+        json.dumps(list(outcomes), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "judge_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (output_dir / "judge_summary.md").write_text(
+        "# Optional local judge\n\n" + "\n".join(f"- {key}: {value}" for key, value in summary.items()) + "\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     """Run the versioned benchmark against the active local production runtime."""
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--benchmark", type=Path, default=DEFAULT_BENCHMARK)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--judge", action="store_true", help="Run optional local-only model judging.")
+    parser.add_argument("--judge-timeout-seconds", type=float, default=60.0)
     args = parser.parse_args()
     config = rag_pipeline.RAGConfig()
     runtime = load_runtime(config)
     results = [evaluate_case(case, runtime, ollama) for case in load_cases(args.benchmark)]
     output_dir = args.output_dir or DEFAULT_RUNS_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     write_reports(results, output_dir)
+    if args.judge:
+        judge = rag_judge.LocalOllamaJudgeAdapter(
+            ollama, config.llm_model_name, args.judge_timeout_seconds
+        )
+        write_judge_reports(evaluate_judge_results(results, load_cases(args.benchmark), judge), output_dir)
     print(f"Deterministic evaluation report written to {output_dir}")
 
 
