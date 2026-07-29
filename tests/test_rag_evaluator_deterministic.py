@@ -116,6 +116,8 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             self.assertTrue((output / "cases.json").exists())
             self.assertTrue((output / "summary.json").exists())
             self.assertTrue((output / "summary.md").exists())
+            self.assertTrue((output / "forensics" / "case-1.json").exists())
+            self.assertTrue((output / "forensics" / "case-1.md").exists())
             payload = json.loads((output / "cases.json").read_text(encoding="utf-8"))
             self.assertEqual(payload[0]["case_id"], "case-1")
             self.assertTrue(payload[0]["trace"]["refusal_detected"])

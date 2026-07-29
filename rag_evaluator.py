@@ -16,6 +16,7 @@ import chromadb
 import ollama
 from sentence_transformers import SentenceTransformer
 
+import rag_forensics
 import rag_pipeline
 
 
@@ -270,6 +271,14 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> Non
         f"- {name}: {value}" for name, value in summary.items()
     ) + "\n"
     (output_dir / "summary.md").write_text(markdown, encoding="utf-8")
+    for result in results:
+        finding = rag_forensics.classify_trace(
+            result["trace"], result["metrics"], result["expected_behavior"]
+        )
+        if finding.category != "passed":
+            rag_forensics.write_failure_report(
+                result["case_id"], finding, result["trace"], output_dir / "forensics"
+            )
 
 
 def main() -> None:
