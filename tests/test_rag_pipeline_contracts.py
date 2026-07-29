@@ -21,6 +21,7 @@ class RAGPipelineContractTests(unittest.TestCase):
         self.assertEqual(rag_pipeline.API_VERSION, "1.0")
         self.assertIn("PipelineTrace", rag_pipeline.__all__)
         self.assertIn("RAGConfig", rag_pipeline.__all__)
+        self.assertIn("normalize_chroma_filter", rag_pipeline.__all__)
         self.assertEqual(len(rag_pipeline.__all__), len(set(rag_pipeline.__all__)) )
 
     def test_configuration_defaults_match_current_production_values(self) -> None:
@@ -88,6 +89,7 @@ class RAGPipelineContractTests(unittest.TestCase):
             module_functions,
             [
                 "build_bm25_index",
+                "normalize_chroma_filter",
                 "metadata_matches_filter",
                 "hybrid_search",
                 "build_source_list",
@@ -103,6 +105,28 @@ class RAGPipelineContractTests(unittest.TestCase):
                 "deduplicate_sources_by_path",
             ],
         )
+
+    def test_normalize_chroma_filter_preserves_valid_forms_and_rejects_invalid_ones(self) -> None:
+        self.assertIsNone(rag_pipeline.normalize_chroma_filter(None))
+        self.assertIsNone(rag_pipeline.normalize_chroma_filter({}))
+        self.assertEqual(
+            rag_pipeline.normalize_chroma_filter({"application": "KPSA"}),
+            {"application": "KPSA"},
+        )
+        self.assertEqual(
+            rag_pipeline.normalize_chroma_filter(
+                {"application": "KPSA", "geographical_entity": "OCM"}
+            ),
+            {"$and": [{"application": "KPSA"}, {"geographical_entity": "OCM"}]},
+        )
+        self.assertEqual(
+            rag_pipeline.normalize_chroma_filter({"$and": [{"application": "KPSA"}]}),
+            {"$and": [{"application": "KPSA"}]},
+        )
+        with self.assertRaisesRegex(TypeError, "must be mappings"):
+            rag_pipeline.normalize_chroma_filter("KPSA")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "one operator"):
+            rag_pipeline.normalize_chroma_filter({"$and": [{"application": "KPSA"}], "x": "y"})
 
 
 if __name__ == "__main__":

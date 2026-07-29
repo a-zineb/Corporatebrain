@@ -52,6 +52,7 @@ __all__ = [
     "TextGenerator",
     "PipelineRuntime",
     "build_bm25_index",
+    "normalize_chroma_filter",
     "metadata_matches_filter",
     "hybrid_search",
     "build_source_list",
@@ -352,6 +353,39 @@ def build_bm25_index(
     return bm25, documents, metadatas
 
 
+def normalize_chroma_filter(chroma_filter: MetadataFilter | None) -> dict[str, Any] | None:
+    """Convert direct multi-field equality filters to Chroma's ``$and`` form.
+
+    The production UI already emits either one equality condition or an
+    explicit ``$and`` filter.  Versioned benchmark cases may express the same
+    conjunction as a plain multi-key JSON object, which Chroma rejects even
+    though the BM25 predicate treats it as an AND.  This helper preserves the
+    existing valid forms and gives both retrieval backends one canonical
+    representation without changing their matching semantics.
+    """
+
+    if chroma_filter is None or chroma_filter == {}:
+        return None
+    if not isinstance(chroma_filter, Mapping):
+        raise TypeError("Chroma metadata filters must be mappings.")
+
+    keys = list(chroma_filter)
+    operator_keys = [key for key in keys if isinstance(key, str) and key.startswith("$")]
+    if operator_keys:
+        if len(keys) != 1 or operator_keys[0] != "$and":
+            raise ValueError("Chroma metadata filters must use one operator or equality fields.")
+        conditions = chroma_filter["$and"]
+        if not isinstance(conditions, Sequence) or isinstance(conditions, (str, bytes)) or not conditions:
+            raise ValueError("Chroma $and filters must contain one or more condition mappings.")
+        if any(not isinstance(condition, Mapping) or len(condition) != 1 for condition in conditions):
+            raise ValueError("Each Chroma $and condition must be a single-field mapping.")
+        return {"$and": [dict(condition) for condition in conditions]}
+
+    if len(chroma_filter) == 1:
+        return dict(chroma_filter)
+    return {"$and": [{key: value} for key, value in chroma_filter.items()]}
+
+
 def metadata_matches_filter(meta: Metadata, chroma_filter: MetadataFilter | None) -> bool:
     """Apply the current production BM25 metadata-filter predicate unchanged.
 
@@ -481,12 +515,13 @@ def hybrid_search(
             selected_chunks=selected_chunks,
         )
 
-    filtered = run_once(chroma_filter, top_k)
+    normalized_filter = normalize_chroma_filter(chroma_filter)
+    filtered = run_once(normalized_filter, top_k)
     fallback: RetrievalPassTrace | None = None
     fallback_chunks: tuple[ChunkRecord, ...] = ()
     fallback_used = False
 
-    if chroma_filter is not None and len(filtered.selected_chunks) < min_results_before_relax:
+    if normalized_filter is not None and len(filtered.selected_chunks) < min_results_before_relax:
         fallback_used = True
         fallback = run_once(None, top_k)
         seen = {chunk.text for chunk in filtered.selected_chunks}

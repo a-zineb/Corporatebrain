@@ -133,6 +133,7 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertNotIn("collection.query(", source)
         for name in (
             "rag_pipeline.build_bm25_index(", "rag_pipeline.rewrite_query(",
+            "rag_pipeline.normalize_chroma_filter(",
             "rag_pipeline.hybrid_search(", "rag_pipeline.build_production_prompt(",
             "rag_pipeline.stream_generate(", "rag_pipeline.select_display_sources(",
         ):
@@ -151,6 +152,15 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         with patch("rag_evaluator.SentenceTransformer", side_effect=OSError("missing cache")):
             with self.assertRaisesRegex(RuntimeError, "Offline evaluation requires cached embedding model"):
                 rag_evaluator.load_offline_embedding_model("paraphrase-multilingual-MiniLM-L12-v2")
+
+    def test_evaluator_uses_shared_filter_normalization_for_multi_field_cases(self):
+        case = case_for(self.content_hash)
+        case["metadata_filter"] = {"application": "KPSA", "geographical_entity": "OCM"}
+        rag_evaluator.evaluate_case(case, self.runtime, FakeGenerator("Answer [SOURCE 1]"))
+        self.assertEqual(
+            self.runtime.collection.calls[0]["where"],
+            {"$and": [{"application": "KPSA"}, {"geographical_entity": "OCM"}]},
+        )
 
 
 if __name__ == "__main__":

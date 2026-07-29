@@ -134,7 +134,7 @@ def evaluate_case(
     rewrite = rag_pipeline.rewrite_query(
         case["question"], case["conversation"], runtime.config.llm_model_name, generator, clock=clock
     )
-    metadata_filter = case["metadata_filter"] or None
+    metadata_filter = rag_pipeline.normalize_chroma_filter(case["metadata_filter"])
     hybrid = rag_pipeline.hybrid_search(
         rewrite.query,
         runtime.collection,
