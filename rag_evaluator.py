@@ -9,6 +9,8 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import queue
+import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -38,17 +40,48 @@ class EvaluationRuntime:
     config: rag_pipeline.RAGConfig
 
 
+class StageTimeoutError(TimeoutError):
+    """Evaluator-only timeout that identifies the stage which exceeded its limit."""
+
+    def __init__(self, stage: str, timeout_seconds: float) -> None:
+        super().__init__(f"{stage} exceeded {timeout_seconds} seconds")
+        self.stage = stage
+        self.timeout_seconds = timeout_seconds
+
+
+def run_stage(stage: str, operation: Callable[[], Any], timeout_seconds: float, *, clock: Callable[[], float] = time.perf_counter) -> tuple[Any, float]:
+    """Run one read-only evaluator stage with a bounded wait and stage timing."""
+
+    result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+    started = clock()
+    def worker() -> None:
+        try:
+            result.put((True, operation()))
+        except BaseException as error:
+            result.put((False, error))
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    try:
+        succeeded, value = result.get(timeout=timeout_seconds)
+    except queue.Empty as error:
+        raise StageTimeoutError(stage, timeout_seconds) from error
+    elapsed_ms = (clock() - started) * 1000
+    if not succeeded:
+        raise value
+    return value, elapsed_ms
+
+
 def load_cases(path: Path) -> list[dict[str, Any]]:
     """Read a versioned JSONL benchmark without changing it."""
 
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def load_runtime(config: rag_pipeline.RAGConfig) -> EvaluationRuntime:
+def load_runtime(config: rag_pipeline.RAGConfig, *, stage_timeout_seconds: float = 120.0) -> EvaluationRuntime:
     """Open the production collection read-only and build its certified BM25 view."""
 
     collection = chromadb.PersistentClient(path=config.chroma_path).get_collection(config.collection_name)
-    embedding_model = load_offline_embedding_model(config.embedding_model_name)
+    embedding_model, _ = run_stage("model_loading", lambda: load_offline_embedding_model(config.embedding_model_name), stage_timeout_seconds)
     bm25, documents, metadatas = rag_pipeline.build_bm25_index(collection, collection.count())
     return EvaluationRuntime(collection, embedding_model, bm25, documents, metadatas, config)
 
@@ -127,25 +160,18 @@ def evaluate_case(
     generator: rag_pipeline.TextGenerator,
     *,
     clock: Callable[[], float] = time.perf_counter,
+    stage_timeout_seconds: float = 120.0,
 ) -> dict[str, Any]:
     """Execute one benchmark case exclusively through certified pipeline calls."""
 
     started = clock()
-    rewrite = rag_pipeline.rewrite_query(
-        case["question"], case["conversation"], runtime.config.llm_model_name, generator, clock=clock
-    )
-    metadata_filter = rag_pipeline.normalize_chroma_filter(case["metadata_filter"])
-    hybrid = rag_pipeline.hybrid_search(
-        rewrite.query,
-        runtime.collection,
-        runtime.embedding_model,
-        runtime.bm25,
-        runtime.documents,
-        runtime.metadatas,
-        chroma_filter=metadata_filter,
-        top_k=runtime.config.production_top_k,
-        min_results_before_relax=runtime.config.min_results_before_relax,
-    )
+    stage_timings: dict[str, float] = {}
+    try:
+        rewrite, stage_timings["query_rewriting"] = run_stage("query_rewriting", lambda: rag_pipeline.rewrite_query(case["question"], case["conversation"], runtime.config.llm_model_name, generator, clock=clock), stage_timeout_seconds, clock=clock)
+        metadata_filter = rag_pipeline.normalize_chroma_filter(case["metadata_filter"])
+        hybrid, stage_timings["vector_retrieval_bm25_rrf"] = run_stage("vector_retrieval_bm25_rrf", lambda: rag_pipeline.hybrid_search(rewrite.query, runtime.collection, runtime.embedding_model, runtime.bm25, runtime.documents, runtime.metadatas, chroma_filter=metadata_filter, top_k=runtime.config.production_top_k, min_results_before_relax=runtime.config.min_results_before_relax), stage_timeout_seconds, clock=clock)
+    except StageTimeoutError as error:
+        return timeout_result(case, error, started, stage_timings, clock)
     filtered_sources = rag_pipeline.build_source_list(
         [chunk.text for chunk in hybrid.filtered.selected_chunks],
         [chunk.metadata for chunk in hybrid.filtered.selected_chunks],
@@ -164,20 +190,22 @@ def evaluate_case(
     citations = rag_pipeline.CitationResult()
     failure = None
     if sources:
-        prompt = rag_pipeline.build_production_prompt(
+        try:
+            prompt, stage_timings["prompt_construction"] = run_stage("prompt_construction", lambda: rag_pipeline.build_production_prompt(
             user_query=case["question"],
             filter_ent="Tous",
             filter_application="Tous",
             history=case["conversation"],
             sources=sources,
             current_lang=language_label(case["language"]),
-            was_relaxed=hybrid.fallback_used,
-        )
+            was_relaxed=hybrid.fallback_used), stage_timeout_seconds, clock=clock)
+        except StageTimeoutError as error:
+            return timeout_result(case, error, started, stage_timings, clock)
         try:
-            generation = rag_pipeline.stream_generate(
-                prompt.prompt, runtime.config.llm_model_name, generator, clock=clock
-            )
+            generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(prompt.prompt, runtime.config.llm_model_name, generator, clock=clock), stage_timeout_seconds, clock=clock)
             citations = rag_pipeline.select_display_sources(generation.response, sources)
+        except StageTimeoutError as error:
+            return timeout_result(case, error, started, stage_timings, clock)
         except Exception as error:
             generation = rag_pipeline.GenerationResult(error=str(error))
             failure = {"code": "generation_error", "message": str(error)}
@@ -221,7 +249,14 @@ def evaluate_case(
         "metrics": metrics,
         "response": generation.response,
         "trace": trace,
+        "stage_timings_ms": stage_timings,
     }
+
+
+def timeout_result(case: Mapping[str, Any], error: StageTimeoutError, started: float, stage_timings: Mapping[str, float], clock: Callable[[], float]) -> dict[str, Any]:
+    """Record an incomplete case deterministically instead of hanging the evaluator."""
+    trace = rag_pipeline.PipelineTrace(query=case["question"], failure=rag_pipeline.PipelineFailure(code=f"{error.stage}_timeout", message=str(error)))
+    return {"case_id": case["id"], "answerability": case["answerability"], "expected_behavior": case["expected_behavior"], "metrics": {"recall_at_k": 0.0, "precision_at_k": 0.0, "hit_rate_at_k": 0.0, "mrr": 0.0, "ndcg_at_k": 0.0, "citation_valid": None, "expected_source_match": None, "refusal_correct": None, "latency_ms": (clock() - started) * 1000}, "response": "", "trace": trace, "stage_timings_ms": dict(stage_timings)}
 
 
 def trace_to_json(trace: rag_pipeline.PipelineTrace) -> dict[str, Any]:
@@ -308,7 +343,7 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> Non
 def run_cases(
     cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
     output_dir: Path, *, resume: bool = False, case_timeout_seconds: float | None = None,
-    clock: Callable[[], float] = time.perf_counter,
+    clock: Callable[[], float] = time.perf_counter, stage_timeout_seconds: float = 120.0,
 ) -> list[Mapping[str, Any]]:
     """Checkpoint each completed case and skip it on an explicit resume run."""
 
@@ -320,7 +355,7 @@ def run_cases(
         if case["id"] in completed:
             continue
         started = clock()
-        result = evaluate_case(case, runtime, generator, clock=clock)
+        result = evaluate_case(case, runtime, generator, clock=clock, stage_timeout_seconds=stage_timeout_seconds)
         elapsed = clock() - started
         if case_timeout_seconds is not None and elapsed > case_timeout_seconds:
             raise TimeoutError(f"Case {case['id']} exceeded {case_timeout_seconds} seconds after completion.")
@@ -386,13 +421,15 @@ def main() -> None:
     parser.add_argument("--judge-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--resume", action="store_true", help="Resume from completed cases in --output-dir.")
     parser.add_argument("--case-timeout-seconds", type=float)
+    parser.add_argument("--stage-timeout-seconds", type=float, default=120.0)
+    parser.add_argument("--limit-cases", type=int)
     args = parser.parse_args()
     config = rag_pipeline.RAGConfig()
-    runtime = load_runtime(config)
+    runtime = load_runtime(config, stage_timeout_seconds=args.stage_timeout_seconds)
     output_dir = args.output_dir or DEFAULT_RUNS_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     results = run_cases(
-        load_cases(args.benchmark), runtime, ollama, output_dir, resume=args.resume,
-        case_timeout_seconds=args.case_timeout_seconds,
+        load_cases(args.benchmark)[:args.limit_cases] if args.limit_cases else load_cases(args.benchmark), runtime, ollama, output_dir, resume=args.resume,
+        case_timeout_seconds=args.case_timeout_seconds, stage_timeout_seconds=args.stage_timeout_seconds,
     )
     if args.judge:
         judge = rag_judge.LocalOllamaJudgeAdapter(

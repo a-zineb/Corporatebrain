@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -179,6 +180,18 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(ValueError, "greater than zero"):
                 rag_evaluator.run_cases([], self.runtime, FakeGenerator(""), Path(temporary), case_timeout_seconds=0)
+
+    def test_generation_stage_timeout_is_checkpointable(self):
+        class SlowGenerator(FakeGenerator):
+            def chat(self, **kwargs):
+                if kwargs.get("stream"):
+                    time.sleep(0.05)
+                return super().chat(**kwargs)
+        result = rag_evaluator.evaluate_case(
+            case_for(self.content_hash), self.runtime, SlowGenerator("Answer [SOURCE 1]"), stage_timeout_seconds=0.001
+        )
+        self.assertEqual(result["trace"].failure.code, "generation_timeout")
+        self.assertIn("query_rewriting", result["stage_timings_ms"])
 
 
 if __name__ == "__main__":
