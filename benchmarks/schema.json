@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Corporate Brain RAG benchmark case",
+  "type": "object",
+  "required": ["schema_version", "id", "question", "conversation", "language", "category", "answerability", "expected_behavior", "metadata_filter", "relevance", "acceptable_citations"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "id": {"type": "string", "pattern": "^cb-v1-[0-9]{4}$"},
+    "question": {"type": "string", "minLength": 1},
+    "conversation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+          "role": {"enum": ["user", "assistant"]},
+          "content": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "language": {"enum": ["fr", "en", "es"]},
+    "category": {"enum": ["direct", "metadata_filtered", "acronym", "synonym", "typo", "multilingual", "conversational_follow_up", "unanswerable", "ambiguous"]},
+    "answerability": {"enum": ["answerable", "unanswerable", "ambiguous"]},
+    "expected_behavior": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["answer", "refuse_no_coverage", "request_clarification"]},
+        "source_display": {"enum": ["expected", "none"]}
+      },
+      "additionalProperties": false
+    },
+    "metadata_filter": {"type": "object"},
+    "expected_answer": {"type": "string", "minLength": 1},
+    "acceptable_answer_points": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "relevance": {"type": "array", "items": {"$ref": "#/$defs/anchor"}},
+    "acceptable_citations": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "notes": {"type": "string"}
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "required": ["anchor_type", "chunk_id", "content_sha256", "source_file", "location", "label"],
+      "properties": {
+        "anchor_type": {"enum": ["chunk_id", "content_metadata_fallback"]},
+        "chunk_id": {"type": "string", "minLength": 1},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_file": {"type": "string", "minLength": 1},
+        "location": {"type": "string", "minLength": 1},
+        "label": {"enum": [0, 1, 2]}
+      },
+      "additionalProperties": false
+    },
+    "citation": {
+      "type": "object",
+      "required": ["chunk_id", "content_sha256"],
+      "properties": {
+        "chunk_id": {"type": "string", "minLength": 1},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

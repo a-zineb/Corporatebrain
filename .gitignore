@@ -22,6 +22,10 @@ csv/
 audit_log.jsonl
 audit_log_v2.jsonl
 
+# Generated evaluation artifacts (benchmarks remain versioned)
+evaluation_runs/
+evaluation_reports/
+
 # Fichiers système Windows
 desktop.ini
 Thumbs.db
