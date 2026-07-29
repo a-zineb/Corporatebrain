@@ -259,6 +259,9 @@ def evaluate_case(
     )
     return {
         "case_id": case["id"],
+        "language": case["language"],
+        "query_type": case["category"],
+        "metadata_filter_state": "filtered" if metadata_filter else "unfiltered",
         "answerability": case["answerability"],
         "expected_behavior": case["expected_behavior"],
         "metrics": metrics,
@@ -271,7 +274,7 @@ def evaluate_case(
 def timeout_result(case: Mapping[str, Any], error: StageTimeoutError, started: float, stage_timings: Mapping[str, float], clock: Callable[[], float]) -> dict[str, Any]:
     """Record an incomplete case deterministically instead of hanging the evaluator."""
     trace = rag_pipeline.PipelineTrace(query=case["question"], failure=rag_pipeline.PipelineFailure(code=f"{error.stage}_timeout", message=str(error)))
-    return {"case_id": case["id"], "answerability": case["answerability"], "expected_behavior": case["expected_behavior"], "metrics": {"recall_at_k": 0.0, "precision_at_k": 0.0, "hit_rate_at_k": 0.0, "mrr": 0.0, "ndcg_at_k": 0.0, "citation_valid": None, "expected_source_match": None, "refusal_correct": None, "latency_ms": (clock() - started) * 1000}, "response": "", "trace": trace, "stage_timings_ms": dict(stage_timings)}
+    return {"case_id": case["id"], "language": case["language"], "query_type": case["category"], "metadata_filter_state": "filtered" if case["metadata_filter"] else "unfiltered", "answerability": case["answerability"], "expected_behavior": case["expected_behavior"], "metrics": {"recall_at_k": 0.0, "precision_at_k": 0.0, "hit_rate_at_k": 0.0, "mrr": 0.0, "ndcg_at_k": 0.0, "citation_valid": None, "expected_source_match": None, "refusal_correct": None, "latency_ms": (clock() - started) * 1000}, "response": "", "trace": trace, "stage_timings_ms": dict(stage_timings)}
 
 
 def trace_to_json(trace: rag_pipeline.PipelineTrace) -> dict[str, Any]:
@@ -326,10 +329,44 @@ def result_to_json(result: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(result.get("trace"), Mapping):
         return dict(result)
     return {
-        "case_id": result["case_id"], "answerability": result["answerability"],
+        "case_id": result["case_id"], "language": result["language"],
+        "query_type": result["query_type"], "metadata_filter_state": result["metadata_filter_state"],
+        "answerability": result["answerability"],
         "expected_behavior": result["expected_behavior"], "metrics": result["metrics"],
         "response": result["response"], "trace": trace_to_json(result["trace"]),
+        "forensic_category": forensic_category(result),
     }
+
+
+def forensic_category(result: Mapping[str, Any]) -> str:
+    """Classify a result from the existing trace-only forensic pipeline."""
+
+    trace = result["trace"]
+    if isinstance(trace, Mapping):
+        return str(result.get("forensic_category") or trace.get("failure", {}).get("code") or "unknown")
+    return rag_forensics.classify_trace(trace, result["metrics"], result["expected_behavior"]).category
+
+
+def segmented_diagnostics(cases: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    """Aggregate existing deterministic outputs by benchmark and trace dimensions."""
+
+    dimensions = {
+        "language": lambda case: case.get("language", "unknown"),
+        "query_type": lambda case: case.get("query_type", "unknown"),
+        "answerability": lambda case: case.get("answerability", "unknown"),
+        "metadata_filter_state": lambda case: case.get("metadata_filter_state", "unknown"),
+        "fallback_usage": lambda case: "used" if case.get("trace", {}).get("fallback_used") else "not_used",
+        "forensic_category": lambda case: case.get("forensic_category", "unknown"),
+    }
+    report: dict[str, dict[str, dict[str, Any]]] = {}
+    for dimension, key_for in dimensions.items():
+        groups: dict[str, list[Mapping[str, Any]]] = {}
+        for case in cases:
+            groups.setdefault(str(key_for(case)), []).append(case)
+        report[dimension] = {
+            key: {"case_count": len(group), "metrics": aggregate(group)} for key, group in groups.items()
+        }
+    return report
 
 
 def load_checkpoint(output_dir: Path) -> list[dict[str, Any]]:
@@ -351,6 +388,9 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> Non
         f"- {name}: {value}" for name, value in summary.items()
     ) + "\n"
     (output_dir / "summary.md").write_text(markdown, encoding="utf-8")
+    (output_dir / "segments.json").write_text(
+        json.dumps(segmented_diagnostics(cases), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     for result in results:
         if isinstance(result["trace"], Mapping):
             continue

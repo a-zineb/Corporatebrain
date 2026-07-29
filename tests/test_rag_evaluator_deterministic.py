@@ -65,6 +65,7 @@ def case_for(content_hash, *, answerability="answerable", response_mode="answer"
     citations = [] if answerability == "unanswerable" else [{"content_sha256": content_hash}]
     return {
         "id": "case-1",
+        "category": "direct",
         "question": "alpha",
         "conversation": [],
         "language": "fr",
@@ -217,6 +218,23 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         summary = rag_evaluator.aggregate([timed_out, successful])
         self.assertEqual(summary["generation_timeout_count"], 1)
         self.assertEqual(summary["successful_generation_count"], 1)
+
+    def test_segmented_diagnostics_use_benchmark_and_forensic_dimensions(self):
+        first = rag_evaluator.result_to_json(
+            rag_evaluator.evaluate_case(case_for(self.content_hash), self.runtime, FakeGenerator("Answer [SOURCE 1]"))
+        )
+        second_case = case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage")
+        second_case.update({"id": "case-2", "language": "en", "category": "typo", "metadata_filter": {"application": "KPSA"}})
+        second = rag_evaluator.result_to_json(
+            rag_evaluator.evaluate_case(second_case, self.runtime, FakeGenerator("I cannot find this in the document context."))
+        )
+        segments = rag_evaluator.segmented_diagnostics([first, second])
+        self.assertEqual(segments["language"]["fr"]["case_count"], 1)
+        self.assertEqual(segments["language"]["en"]["case_count"], 1)
+        self.assertEqual(segments["query_type"]["typo"]["case_count"], 1)
+        self.assertEqual(segments["metadata_filter_state"]["filtered"]["case_count"], 1)
+        self.assertEqual(segments["fallback_usage"]["used"]["case_count"], 1)
+        self.assertIn("passed", segments["forensic_category"])
 
 
 if __name__ == "__main__":
