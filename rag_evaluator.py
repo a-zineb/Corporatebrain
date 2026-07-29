@@ -262,21 +262,30 @@ def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:
     return summary
 
 
+def result_to_json(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Serialize a completed result, preserving an already checkpointed record."""
+
+    if isinstance(result.get("trace"), Mapping):
+        return dict(result)
+    return {
+        "case_id": result["case_id"], "answerability": result["answerability"],
+        "expected_behavior": result["expected_behavior"], "metrics": result["metrics"],
+        "response": result["response"], "trace": trace_to_json(result["trace"]),
+    }
+
+
+def load_checkpoint(output_dir: Path) -> list[dict[str, Any]]:
+    """Load completed case records from an evaluator-owned checkpoint."""
+
+    path = output_dir / "cases.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+
 def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> None:
     """Write reproducible JSON and Markdown reports below the ignored run directory."""
 
-    output_dir.mkdir(parents=True, exist_ok=False)
-    cases = [
-        {
-            "case_id": result["case_id"],
-            "answerability": result["answerability"],
-            "expected_behavior": result["expected_behavior"],
-            "metrics": result["metrics"],
-            "response": result["response"],
-            "trace": trace_to_json(result["trace"]),
-        }
-        for result in results
-    ]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cases = [result_to_json(result) for result in results]
     summary = aggregate(results)
     (output_dir / "cases.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -285,6 +294,8 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> Non
     ) + "\n"
     (output_dir / "summary.md").write_text(markdown, encoding="utf-8")
     for result in results:
+        if isinstance(result["trace"], Mapping):
+            continue
         finding = rag_forensics.classify_trace(
             result["trace"], result["metrics"], result["expected_behavior"]
         )
@@ -292,6 +303,30 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> Non
             rag_forensics.write_failure_report(
                 result["case_id"], finding, result["trace"], output_dir / "forensics"
             )
+
+
+def run_cases(
+    cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
+    output_dir: Path, *, resume: bool = False, case_timeout_seconds: float | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> list[Mapping[str, Any]]:
+    """Checkpoint each completed case and skip it on an explicit resume run."""
+
+    if case_timeout_seconds is not None and case_timeout_seconds <= 0:
+        raise ValueError("case_timeout_seconds must be greater than zero.")
+    results: list[Mapping[str, Any]] = load_checkpoint(output_dir) if resume else []
+    completed = {result["case_id"] for result in results}
+    for case in cases:
+        if case["id"] in completed:
+            continue
+        started = clock()
+        result = evaluate_case(case, runtime, generator, clock=clock)
+        elapsed = clock() - started
+        if case_timeout_seconds is not None and elapsed > case_timeout_seconds:
+            raise TimeoutError(f"Case {case['id']} exceeded {case_timeout_seconds} seconds after completion.")
+        results.append(result)
+        write_reports(results, output_dir)
+    return results
 
 
 def evaluate_judge_results(
@@ -349,12 +384,16 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--judge", action="store_true", help="Run optional local-only model judging.")
     parser.add_argument("--judge-timeout-seconds", type=float, default=60.0)
+    parser.add_argument("--resume", action="store_true", help="Resume from completed cases in --output-dir.")
+    parser.add_argument("--case-timeout-seconds", type=float)
     args = parser.parse_args()
     config = rag_pipeline.RAGConfig()
     runtime = load_runtime(config)
-    results = [evaluate_case(case, runtime, ollama) for case in load_cases(args.benchmark)]
     output_dir = args.output_dir or DEFAULT_RUNS_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    write_reports(results, output_dir)
+    results = run_cases(
+        load_cases(args.benchmark), runtime, ollama, output_dir, resume=args.resume,
+        case_timeout_seconds=args.case_timeout_seconds,
+    )
     if args.judge:
         judge = rag_judge.LocalOllamaJudgeAdapter(
             ollama, config.llm_model_name, args.judge_timeout_seconds

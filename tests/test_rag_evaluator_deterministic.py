@@ -162,6 +162,24 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             {"$and": [{"application": "KPSA"}, {"geographical_entity": "OCM"}]},
         )
 
+    def test_run_cases_checkpoints_and_resumes_without_rerunning_completed_cases(self):
+        first = case_for(self.content_hash)
+        second = case_for(self.content_hash)
+        second["id"] = "case-2"
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "run"
+            with patch("rag_evaluator.evaluate_case", wraps=rag_evaluator.evaluate_case) as evaluate:
+                rag_evaluator.run_cases([first], self.runtime, FakeGenerator("Answer [SOURCE 1]"), output)
+                results = rag_evaluator.run_cases([first, second], self.runtime, FakeGenerator("Answer [SOURCE 1]"), output, resume=True)
+            self.assertEqual(evaluate.call_count, 2)
+            self.assertEqual([result["case_id"] for result in results], ["case-1", "case-2"])
+            self.assertEqual(len(rag_evaluator.load_checkpoint(output)), 2)
+
+    def test_run_cases_rejects_invalid_timeout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "greater than zero"):
+                rag_evaluator.run_cases([], self.runtime, FakeGenerator(""), Path(temporary), case_timeout_seconds=0)
+
 
 if __name__ == "__main__":
     unittest.main()
