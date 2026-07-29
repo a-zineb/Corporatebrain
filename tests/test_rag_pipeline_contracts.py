@@ -95,6 +95,8 @@ class RAGPipelineContractTests(unittest.TestCase):
                 "build_recent_chat_history",
                 "build_no_match_message",
                 "build_production_prompt",
+                "rewrite_query",
+                "stream_generate",
                 "parse_cited_source_ids",
                 "detect_no_coverage",
                 "select_display_sources",

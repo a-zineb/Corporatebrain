@@ -112,36 +112,12 @@ def detect_query_language(text, fallback_lang="French"):
         return fallback_lang
 
 def contextualize_query(user_query, chat_history, model_name):
-    """Reformule la question utilisateur pour la rendre autonome grâce à l'historique."""
-    if not chat_history:
-        return user_query
-
-    recent_history = ""
-    for msg in chat_history[-3:]:
-        role = "Utilisateur" if msg["role"] == "user" else "Assistant"
-        recent_history += f"{role}: {msg['content']}\n"
-
-    prompt_rewrite = f"""Compte tenu de l'historique de conversation suivant et de la dernière question de l'utilisateur, reformule la dernière question pour qu'elle soit totalement AUTONOME et COMPRÉHENSIBLE sans l'historique (remplace les pronoms comme 'it', 'ce terme', 'celui-ci', 'the answer' par les acronymes ou sujets réels abordés précédemment).
-Si la question est déjà autonome, renvoie-la exactement à l'identique.
-Ne réponds pas à la question, renvoie UNIQUEMENT la question reformulée.
-
-HISTORIQUE :
-{recent_history}
-
-QUESTION : {user_query}
-QUESTION REFORMULÉE :"""
-
-    try:
-        res = ollama.chat(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt_rewrite}],
-            options={"temperature": 0.0}
-        )
-        reformulated = res["message"]["content"].strip()
-        return reformulated if reformulated else user_query
-    except Exception as e:
-        print(f"Ollama Error in contextualize_query: {e}")
-        return user_query
+    return rag_pipeline.rewrite_query(
+        user_query,
+        chat_history,
+        model_name,
+        ollama,
+    ).query
 
 # ==========================================
 # 5. EXTRACTION ET DÉCOUPE DES TEXTES
@@ -531,18 +507,13 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 full_stream_response = ""
 
                 try:
-                    llm_stream = ollama.chat(
-                        model=selected_model,
-                        messages=[{"role": "user", "content": prompt_instructions}],
-                        options={"temperature": 0.2},
-                        stream=True
+                    generation_result = rag_pipeline.stream_generate(
+                        prompt_instructions,
+                        selected_model,
+                        ollama,
+                        on_token=lambda response: response_placeholder.markdown(response + "▌"),
                     )
-
-                    for chunk in llm_stream:
-                        content = chunk.get("message", {}).get("content", "")
-                        if content:
-                            full_stream_response += content
-                            response_placeholder.markdown(full_stream_response + "▌")
+                    full_stream_response = generation_result.response
                     response_placeholder.markdown(full_stream_response)
 
                     citation_result = rag_pipeline.select_display_sources(

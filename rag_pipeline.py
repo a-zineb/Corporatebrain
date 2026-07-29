@@ -15,7 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os
 import re
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+import time
+from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from rank_bm25 import BM25Okapi
 
@@ -41,6 +42,7 @@ __all__ = [
     "PromptSource",
     "PromptResult",
     "CitationResult",
+    "QueryRewriteResult",
     "GenerationResult",
     "PipelineTimings",
     "PipelineFailure",
@@ -57,6 +59,8 @@ __all__ = [
     "build_recent_chat_history",
     "build_no_match_message",
     "build_production_prompt",
+    "rewrite_query",
+    "stream_generate",
     "parse_cited_source_ids",
     "detect_no_coverage",
     "select_display_sources",
@@ -226,12 +230,21 @@ class CitationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class QueryRewriteResult:
+    """The production query-rewrite outcome and optional measured duration."""
+
+    query: str = ""
+    latency_ms: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class GenerationResult:
     """The model result and generation metadata, independent of any UI stream."""
 
     response: str = ""
     streamed: bool = False
     error: str | None = None
+    latency_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,6 +608,82 @@ INSTRUCTIONS :
 8. Réponds dans la même langue que la question de l'utilisateur ({current_lang}).
 """
     return PromptResult(prompt=prompt, sources=tuple(sources), context=context_str)
+
+
+def rewrite_query(
+    user_query: str,
+    chat_history: Sequence[ChatMessage | Metadata],
+    model_name: str,
+    generator: TextGenerator,
+    *,
+    error_reporter: Callable[[str], None] = print,
+    clock: Callable[[], float] = time.perf_counter,
+) -> QueryRewriteResult:
+    """Apply the active app.py conversational rewrite behavior unchanged."""
+
+    start = clock()
+    if not chat_history:
+        return QueryRewriteResult(query=user_query, latency_ms=(clock() - start) * 1000)
+
+    recent_history = ""
+    for message in chat_history[-3:]:
+        role = "Utilisateur" if message["role"] == "user" else "Assistant"
+        recent_history += f"{role}: {message['content']}\n"
+
+    prompt_rewrite = f"""Compte tenu de l'historique de conversation suivant et de la dernière question de l'utilisateur, reformule la dernière question pour qu'elle soit totalement AUTONOME et COMPRÉHENSIBLE sans l'historique (remplace les pronoms comme 'it', 'ce terme', 'celui-ci', 'the answer' par les acronymes ou sujets réels abordés précédemment).
+Si la question est déjà autonome, renvoie-la exactement à l'identique.
+Ne réponds pas à la question, renvoie UNIQUEMENT la question reformulée.
+
+HISTORIQUE :
+{recent_history}
+
+QUESTION : {user_query}
+QUESTION REFORMULÉE :"""
+
+    try:
+        response = generator.chat(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt_rewrite}],
+            options={"temperature": 0.0},
+        )
+        reformulated = response["message"]["content"].strip()
+        query = reformulated if reformulated else user_query
+    except Exception as error:
+        error_reporter(f"Ollama Error in contextualize_query: {error}")
+        query = user_query
+
+    return QueryRewriteResult(query=query, latency_ms=(clock() - start) * 1000)
+
+
+def stream_generate(
+    prompt: str,
+    model_name: str,
+    generator: TextGenerator,
+    *,
+    on_token: Callable[[str], None] | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> GenerationResult:
+    """Stream the active production Ollama request without owning UI rendering."""
+
+    start = clock()
+    stream = generator.chat(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        options={"temperature": 0.2},
+        stream=True,
+    )
+    response = ""
+    for chunk in stream:
+        content = chunk.get("message", {}).get("content", "")
+        if content:
+            response += content
+            if on_token:
+                on_token(response)
+    return GenerationResult(
+        response=response,
+        streamed=True,
+        latency_ms=(clock() - start) * 1000,
+    )
 
 
 def parse_cited_source_ids(response: str) -> tuple[int, ...]:

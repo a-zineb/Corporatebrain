@@ -76,6 +76,8 @@ class AppPipelineIntegrationTests(unittest.TestCase):
         self.assertIn("return rag_pipeline.hybrid_search(", source)
         self.assertIn("rag_pipeline.build_source_list(", source)
         self.assertIn("rag_pipeline.build_production_prompt(", source)
+        self.assertIn("return rag_pipeline.rewrite_query(", source)
+        self.assertIn("rag_pipeline.stream_generate(", source)
         self.assertIn("rag_pipeline.select_display_sources(", source)
         self.assertIn("rag_pipeline.deduplicate_sources_by_path(", source)
 
@@ -87,7 +89,7 @@ class AppPipelineIntegrationTests(unittest.TestCase):
 
         baseline_rewrite = top_level_function("contextualize_query", {"ollama": DeterministicOllama()})
         integrated_rewrite = current_top_level_function(
-            "contextualize_query", {"ollama": DeterministicOllama()}
+            "contextualize_query", {"ollama": DeterministicOllama(), "rag_pipeline": rag_pipeline}
         )
         history = [{"role": "assistant", "content": "OCM is change management."}]
         self.assertEqual(
