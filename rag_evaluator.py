@@ -61,6 +61,24 @@ class ContextGroundingExperiment:
     name: str
     strategy: str
     max_sources: int | None = None
+    prompt_suffix: str = ""
+
+
+G4_EXPLICIT_FACTS_SUFFIX = """[EVALUATOR-ONLY GROUNDING RULES]
+Answer only with facts explicitly stated in the supplied SOURCE sections.
+Do not use outside knowledge, assumptions, or facts from a source that is not supplied.
+If the supplied sources do not explicitly answer the question, state that the information is not available in the provided documents.
+Do not infer, generalize, or substitute a related fact for the requested fact.
+[/EVALUATOR-ONLY GROUNDING RULES]"""
+
+
+G5_CITATION_REQUIRED_SUFFIX = G4_EXPLICIT_FACTS_SUFFIX + """
+
+[EVALUATOR-ONLY CITATION RULES]
+Every sentence containing a factual claim must end with one or more supporting citations in the exact form [SOURCE n].
+Use only source numbers that appear in the supplied context.
+A clarification or no-coverage response must not invent a citation.
+[/EVALUATOR-ONLY CITATION RULES]"""
 
 
 GROUNDING_EXPERIMENTS: tuple[ContextGroundingExperiment, ...] = (
@@ -68,6 +86,8 @@ GROUNDING_EXPERIMENTS: tuple[ContextGroundingExperiment, ...] = (
     ContextGroundingExperiment("G1_evidence_first", "evidence_first"),
     ContextGroundingExperiment("G2_deduplicated_context", "deduplicated"),
     ContextGroundingExperiment("G3_focused_context", "focused", max_sources=5),
+    ContextGroundingExperiment("G4_explicit_facts", "prompt_suffix", prompt_suffix=G4_EXPLICIT_FACTS_SUFFIX),
+    ContextGroundingExperiment("G5_citation_required", "prompt_suffix", prompt_suffix=G5_CITATION_REQUIRED_SUFFIX),
 )
 
 
@@ -359,7 +379,7 @@ def grounding_context(
 
     original = tuple(sources)
     expected = {item["content_sha256"] for item in relevance if item.get("label", 0) > 0}
-    if experiment.strategy == "control":
+    if experiment.strategy in ("control", "prompt_suffix"):
         retained = original
         reasons: dict[int, str] = {}
     elif experiment.strategy == "evidence_first":
@@ -403,17 +423,47 @@ def grounding_quality_metrics(
     """Measure exact benchmark answer-point use with explicit prompt support."""
 
     if case["answerability"] != "answerable":
-        return {"grounded_answer_correct": None, "answer_use": None, "blank_output": not response.strip()}
+        return {
+            "grounded_answer_correct": None, "answer_use": None,
+            "blank_output": not response.strip(), "unsupported_answer_point_count": 0,
+        }
     normalized = response.casefold()
     answer_points = [str(point).casefold() for point in case.get("acceptable_answer_points", [])]
     answer_used = bool(answer_points) and all(point in normalized for point in answer_points)
     expected_hashes = {item["content_sha256"] for item in case["relevance"] if item["label"] > 0}
     context_hashes = {source_hash(source) for source in sources}
+    unsupported_answer_points = sum(
+        point in normalized and not expected_hashes <= context_hashes for point in answer_points
+    )
     return {
         "grounded_answer_correct": answer_used and expected_hashes <= context_hashes,
         "answer_use": answer_used,
         "blank_output": not response.strip(),
+        "unsupported_answer_point_count": unsupported_answer_points,
     }
+
+
+def citation_obligation_metrics(
+    case: Mapping[str, Any], citation: Mapping[str, bool | None],
+) -> dict[str, bool | int | None]:
+    """Evaluate citation compliance over every answerable case, not only cited cases."""
+
+    if case["answerability"] != "answerable":
+        return {"citation_obligation_required": None, "citation_obligation_met": None}
+    return {
+        "citation_obligation_required": 1,
+        "citation_obligation_met": bool(citation["citation_valid"] and citation["expected_source_match"]),
+    }
+
+
+def append_evaluator_prompt_suffix(
+    prompt: rag_pipeline.PromptResult, suffix: str,
+) -> rag_pipeline.PromptResult:
+    """Append an experiment instruction without altering the production prompt builder."""
+
+    return rag_pipeline.PromptResult(
+        prompt=f"{prompt.prompt}\n\n{suffix}", sources=prompt.sources, context=prompt.context,
+    )
 
 
 def retrieval_parity(control: rag_pipeline.PipelineTrace, variant: rag_pipeline.PipelineTrace) -> bool:
@@ -454,6 +504,8 @@ def evaluate_grounding_variant(
             current_lang=language_label(case["language"]),
             was_relaxed=bool(control_trace.retrieval and control_trace.retrieval.fallback_used),
         ), stage_timeout_seconds, clock=clock)
+        if experiment.prompt_suffix:
+            prompt = append_evaluator_prompt_suffix(prompt, experiment.prompt_suffix)
         generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(
             prompt.prompt, runtime.config.llm_model_name, generator, clock=clock,
             clarification_language=language_label(case["language"]),
@@ -465,7 +517,9 @@ def evaluate_grounding_variant(
         return result
     citations = rag_pipeline.select_display_sources(generation.response, sources)
     metrics = dict(control["metrics"])
-    metrics.update(citation_metrics(citations, case["acceptable_citations"]))
+    citation = citation_metrics(citations, case["acceptable_citations"])
+    metrics.update(citation)
+    metrics.update(citation_obligation_metrics(case, citation))
     expected_mode = case["expected_behavior"]["mode"]
     is_refusal = citations.no_coverage_detected and not citations.display_sources
     is_clarification = generation.response == rag_pipeline.build_clarification_message(language_label(case["language"]))
@@ -516,6 +570,15 @@ def grounding_experiment_report(results: Mapping[str, Sequence[Mapping[str, Any]
             )
             for metric in ("grounded_answer_correct", "answer_use", "blank_output")
         }
+        obligation_rows = [row for row in rows if row["metrics"].get("citation_obligation_required")]
+        quality["citation_obligation_case_count"] = len(obligation_rows)
+        quality["citation_obligation_coverage"] = (
+            sum(bool(row["metrics"].get("citation_obligation_met")) for row in obligation_rows) / len(obligation_rows)
+            if obligation_rows else None
+        )
+        quality["unsupported_answer_point_count"] = sum(
+            int(row["metrics"].get("unsupported_answer_point_count") or 0) for row in rows
+        )
         forensic_counts: dict[str, int] = {}
         for row in serialized:
             category = row.get("forensic_category", "unknown")
@@ -526,6 +589,67 @@ def grounding_experiment_report(results: Mapping[str, Sequence[Mapping[str, Any]
             "forensic_counts": forensic_counts,
         }
     return {"control": "G0_control", "variants": variants}
+
+
+def metric_direction(control: float | int | None, variant: float | int | None, *, lower_is_better: bool = False) -> str:
+    """Describe a variant delta without claiming statistical significance."""
+
+    if control is None or variant is None:
+        return "NOT_EVALUABLE"
+    if variant == control:
+        return "UNCHANGED"
+    improved = variant < control if lower_is_better else variant > control
+    return "IMPROVED" if improved else "REGRESSED"
+
+
+def compare_grounding_stability(
+    first: Mapping[str, Any], second: Mapping[str, Any],
+    first_fingerprint: Mapping[str, Any], second_fingerprint: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compare two completed experiment reports; this never promotes a variant."""
+
+    metrics = {
+        "grounded_answer_correct": False, "answer_use": False,
+        "expected_source_match": False, "citation_valid": False,
+        "refusal_correct": False, "clarification_correct": False,
+        "blank_output": True, "unsupported_answer_point_count": True,
+        "latency_ms": True, "citation_obligation_coverage": False,
+    }
+    variants: dict[str, Any] = {}
+    first_variants = first.get("variants", {})
+    second_variants = second.get("variants", {})
+    for name in sorted(set(first_variants) & set(second_variants)):
+        if name == "G0_control":
+            continue
+        directions: dict[str, Any] = {}
+        for metric, lower_is_better in metrics.items():
+            run_one = metric_direction(
+                first_variants["G0_control"]["metrics"].get(metric),
+                first_variants[name]["metrics"].get(metric), lower_is_better=lower_is_better,
+            )
+            run_two = metric_direction(
+                second_variants["G0_control"]["metrics"].get(metric),
+                second_variants[name]["metrics"].get(metric), lower_is_better=lower_is_better,
+            )
+            directions[metric] = {
+                "first_run": run_one, "second_run": run_two,
+                "stable": run_one == run_two and run_one != "NOT_EVALUABLE",
+            }
+        variants[name] = {
+            "complete": all(
+                report["metrics"].get("generation_timeout_count") == 0
+                for report in (first_variants[name], second_variants[name])
+            ),
+            "retrieval_parity": all(
+                report.get("retrieval_parity") is True
+                for report in (first_variants[name], second_variants[name])
+            ),
+            "metric_directions": directions,
+        }
+    return {
+        "fingerprint_match": dict(first_fingerprint) == dict(second_fingerprint),
+        "variants": variants,
+    }
 
 
 def run_grounding_experiments(
@@ -541,7 +665,12 @@ def run_grounding_experiments(
         retained, retained_records, dropped = grounding_context(control_sources, case["relevance"], GROUNDING_EXPERIMENTS[0])
         control = dict(control)
         control["experiment"] = GROUNDING_EXPERIMENTS[0].name
-        control["metrics"] = {**control["metrics"], **grounding_quality_metrics(case, control["response"], retained)}
+        control_citations = citation_metrics(control["trace"].citations, case["acceptable_citations"])
+        control["metrics"] = {
+            **control["metrics"],
+            **grounding_quality_metrics(case, control["response"], retained),
+            **citation_obligation_metrics(case, control_citations),
+        }
         control["grounding_context"] = {"retained_chunks": retained_records, "dropped_chunks": dropped, "retrieval_parity": True}
         rows[GROUNDING_EXPERIMENTS[0].name].append(control)
         for experiment in GROUNDING_EXPERIMENTS[1:]:

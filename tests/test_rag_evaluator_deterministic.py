@@ -294,14 +294,49 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             [case], self.runtime, FakeGenerator("alpha [SOURCE 1]")
         )
         self.assertEqual(len(self.runtime.collection.calls), 1)
-        self.assertEqual(set(rows), {"G0_control", "G1_evidence_first", "G2_deduplicated_context", "G3_focused_context"})
+        self.assertEqual(set(rows), {
+            "G0_control", "G1_evidence_first", "G2_deduplicated_context", "G3_focused_context",
+            "G4_explicit_facts", "G5_citation_required",
+        })
         self.assertTrue(all(report["variants"][name]["retrieval_parity"] for name in rows))
         self.assertEqual(report["variants"]["G0_control"]["metrics"]["answer_use"], 1.0)
         self.assertEqual(report["variants"]["G0_control"]["metrics"]["grounded_answer_correct"], 1.0)
+        self.assertEqual(report["variants"]["G5_citation_required"]["metrics"]["citation_obligation_coverage"], 1.0)
         with tempfile.TemporaryDirectory() as temporary:
             rag_evaluator.write_grounding_experiment_report(report, rows, Path(temporary))
             payload = json.loads((Path(temporary) / "context_grounding_experiments.json").read_text(encoding="utf-8"))
             self.assertTrue(payload["summary"]["variants"]["G3_focused_context"]["retrieval_parity"])
+
+    def test_prompt_grounding_variants_append_only_the_documented_suffix(self):
+        case = case_for(self.content_hash)
+        report, rows = rag_evaluator.run_grounding_experiments(
+            [case], self.runtime, FakeGenerator("alpha [SOURCE 1]")
+        )
+        control = rows["G0_control"][0]["trace"]
+        g4 = rows["G4_explicit_facts"][0]["trace"]
+        g5 = rows["G5_citation_required"][0]["trace"]
+        self.assertEqual(g4.prompt.sources, control.prompt.sources)
+        self.assertEqual(g5.prompt.sources, control.prompt.sources)
+        self.assertEqual(g4.prompt.prompt, f"{control.prompt.prompt}\n\n{rag_evaluator.G4_EXPLICIT_FACTS_SUFFIX}")
+        self.assertEqual(g5.prompt.prompt, f"{control.prompt.prompt}\n\n{rag_evaluator.G5_CITATION_REQUIRED_SUFFIX}")
+        self.assertTrue(report["variants"]["G4_explicit_facts"]["retrieval_parity"])
+        self.assertTrue(report["variants"]["G5_citation_required"]["retrieval_parity"])
+
+    def test_stability_comparison_requires_same_direction_and_fingerprint(self):
+        def report(answer_use):
+            return {"variants": {
+                "G0_control": {"metrics": {"answer_use": 0.0, "generation_timeout_count": 0}},
+                "G4_explicit_facts": {"metrics": {"answer_use": answer_use, "generation_timeout_count": 0}, "retrieval_parity": True},
+            }}
+        first = report(1.0)
+        second = report(1.0)
+        comparison = rag_evaluator.compare_grounding_stability(first, second, {"corpus": "same"}, {"corpus": "same"})
+        self.assertTrue(comparison["fingerprint_match"])
+        self.assertTrue(comparison["variants"]["G4_explicit_facts"]["complete"])
+        self.assertEqual(
+            comparison["variants"]["G4_explicit_facts"]["metric_directions"]["answer_use"],
+            {"first_run": "IMPROVED", "second_run": "IMPROVED", "stable": True},
+        )
 
     def test_grounding_variant_preserves_variant_label_after_control_timeout(self):
         control = rag_evaluator.timeout_result(
