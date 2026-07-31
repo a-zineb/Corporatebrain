@@ -90,6 +90,20 @@ def hybrid_search(query, collection, embedding_model, bm25, docs, metadatas, chr
     ).as_legacy_tuple()
 
 
+def list_catalog_documents(collection, chroma_filter=None):
+    """Read every in-scope document metadata record without retrieval."""
+    records = collection.get(where=chroma_filter, include=["metadatas"]).get("metadatas", [])
+    unique = {}
+    for metadata in records:
+        if not isinstance(metadata, dict):
+            continue
+        filename = metadata.get("source_file")
+        if not isinstance(filename, str) or not filename:
+            continue
+        unique.setdefault(metadata.get("file_hash") or filename, metadata)
+    return sorted(unique.values(), key=lambda item: (item.get("application", ""), item.get("geographical_entity", ""), item.get("source_file", "").lower()))
+
+
 # ==========================================
 # 4. FONCTIONS UTILITAIRES (DÉTECTION, MODELS, REFORMULATION)
 # ==========================================
@@ -410,6 +424,16 @@ if len(chroma_conditions) == 1:
     chroma_filter = chroma_conditions[0]
 elif len(chroma_conditions) > 1:
     chroma_filter = {"$and": chroma_conditions}
+
+with st.sidebar:
+    with st.expander(" Catalogue de connaissances"):
+        catalog = list_catalog_documents(collection, chroma_filter)
+        st.caption(f"{len(catalog)} document(s) unique(s)")
+        for index, metadata in enumerate(catalog):
+            filename = metadata["source_file"]
+            extension = os.path.splitext(filename)[1].lstrip(".").upper() or "FILE"
+            st.write(f"**{metadata.get('application', 'Non classée')} / {metadata.get('geographical_entity', 'Non classée')}** — {filename} [{extension}]")
+            st.button(" Fichier", on_click=open_local_file, args=(os.path.abspath(os.path.join(STORAGE_DIR, filename)),), key=f"catalog_file_{index}")
 
 # ==========================================
 # 8. INTERFACE DE DISCUSSION PRINCIPALE
