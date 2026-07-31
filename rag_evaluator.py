@@ -225,18 +225,28 @@ def retrieval_metrics(
 
 
 def citation_metrics(
-    citations: rag_pipeline.CitationResult,
+    citations: rag_pipeline.CitationResult | None,
     expected_citations: Sequence[Mapping[str, Any]],
-) -> dict[str, bool | None]:
+) -> dict[str, bool | None | str | int]:
     """Check only citation validity and expected-source matching deterministically."""
 
+    if citations is None:
+        return {
+            "citation_valid": None, "expected_source_match": None,
+            "citation_status": "NOT_EVALUABLE", "citation_evaluable_count": 0,
+        }
     if not citations.cited_source_ids:
-        return {"citation_valid": None, "expected_source_match": None}
+        return {
+            "citation_valid": None, "expected_source_match": None,
+            "citation_status": "NO_CITATIONS", "citation_evaluable_count": 0,
+        }
     actual_hashes = {source_hash(source) for source in citations.display_sources}
     expected_hashes = {item["content_sha256"] for item in expected_citations}
     return {
         "citation_valid": not citations.invalid_source_ids,
         "expected_source_match": bool(actual_hashes) and actual_hashes <= expected_hashes,
+        "citation_status": "EVALUATED",
+        "citation_evaluable_count": 1,
     }
 
 
@@ -497,6 +507,7 @@ def evaluate_grounding_variant(
     sources, retained, dropped = grounding_context(control_trace.prompt.sources, case["relevance"], experiment)
     started = clock()
     stage_timings: dict[str, float] = {}
+    stage = "prompt_construction"
     try:
         prompt, stage_timings["prompt_construction"] = run_stage("prompt_construction", lambda: rag_pipeline.build_production_prompt(
             user_query=case["question"], filter_ent="Tous", filter_application="Tous",
@@ -506,6 +517,7 @@ def evaluate_grounding_variant(
         ), stage_timeout_seconds, clock=clock)
         if experiment.prompt_suffix:
             prompt = append_evaluator_prompt_suffix(prompt, experiment.prompt_suffix)
+        stage = "generation"
         generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(
             prompt.prompt, runtime.config.llm_model_name, generator, clock=clock,
             clarification_language=language_label(case["language"]),
@@ -515,7 +527,34 @@ def evaluate_grounding_variant(
         result["experiment"] = experiment.name
         result["grounding_context"] = {"retained_chunks": retained, "dropped_chunks": dropped, "retrieval_parity": True}
         return result
-    citations = rag_pipeline.select_display_sources(generation.response, sources)
+    except Exception as error:
+        failure = rag_pipeline.PipelineFailure(code=f"{stage}_error", message=str(error))
+        trace = rag_pipeline.PipelineTrace(
+            query=control_trace.query, rewritten_query=control_trace.rewritten_query,
+            language=control_trace.language, metadata_filter=control_trace.metadata_filter,
+            retrieval=control_trace.retrieval, prompt=control_trace.prompt,
+            generation=rag_pipeline.GenerationResult(error=str(error)), failure=failure,
+        )
+        metrics = dict(control["metrics"])
+        citation = citation_metrics(None, case["acceptable_citations"])
+        metrics.update(citation)
+        metrics.update(citation_obligation_metrics(case, citation))
+        metrics.update(grounding_quality_metrics(case, "", sources))
+        metrics["latency_ms"] = (clock() - started) * 1000
+        return {
+            "case_id": case["id"], "experiment": experiment.name, "language": case["language"],
+            "query_type": case["category"],
+            "metadata_filter_state": "filtered" if control_trace.metadata_filter else "unfiltered",
+            "answerability": case["answerability"], "expected_behavior": case["expected_behavior"],
+            "metrics": metrics, "response": "", "trace": trace, "stage_timings_ms": stage_timings,
+            "grounding_context": {"retained_chunks": retained, "dropped_chunks": dropped, "retrieval_parity": retrieval_parity(control_trace, trace)},
+        }
+    try:
+        citations = rag_pipeline.select_display_sources(generation.response, sources)
+        failure = None
+    except Exception as error:
+        citations = None
+        failure = rag_pipeline.PipelineFailure(code="citation_error", message=str(error))
     metrics = dict(control["metrics"])
     citation = citation_metrics(citations, case["acceptable_citations"])
     metrics.update(citation)
@@ -540,7 +579,7 @@ def evaluate_grounding_variant(
         timings=rag_pipeline.PipelineTimings(
             rewrite_ms=control_trace.timings.rewrite_ms,
             generation_ms=generation.latency_ms, total_ms=metrics["latency_ms"],
-        ),
+        ), failure=failure,
     )
     return {
         "case_id": case["id"], "experiment": experiment.name, "language": case["language"],

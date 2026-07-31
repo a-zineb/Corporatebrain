@@ -106,6 +106,13 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertIsNone(result["metrics"]["refusal_correct"])
         self.assertEqual(self.runtime.collection.calls[0]["n_results"], 10)
 
+    def test_missing_citations_are_not_evaluable(self):
+        metrics = rag_evaluator.citation_metrics(None, [{"content_sha256": self.content_hash}])
+        self.assertEqual(metrics["citation_status"], "NOT_EVALUABLE")
+        self.assertEqual(metrics["citation_evaluable_count"], 0)
+        self.assertIsNone(metrics["citation_valid"])
+        self.assertIsNone(metrics["expected_source_match"])
+
     def test_refusal_and_report_serialization_are_deterministic(self):
         result = rag_evaluator.evaluate_case(
             case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage"),
@@ -371,6 +378,20 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         result = rag_evaluator.evaluate_case(case, self.runtime, FakeGenerator(""))
         self.assertEqual(result["response"], rag_pipeline.build_clarification_message("French"))
         self.assertTrue(result["metrics"]["clarification_correct"])
+
+    def test_grounding_runs_continue_after_generation_error(self):
+        class ErrorGenerator(FakeGenerator):
+            def chat(self, **kwargs):
+                if kwargs.get("stream"):
+                    raise RuntimeError("local generation failed")
+                return super().chat(**kwargs)
+        report, rows = rag_evaluator.run_grounding_experiments(
+            [case_for(self.content_hash)], self.runtime, ErrorGenerator(""),
+        )
+        self.assertEqual(set(rows), {"G0_control", "G1_evidence_first", "G2_deduplicated_context", "G3_focused_context", "G4_explicit_facts", "G5_citation_required"})
+        self.assertEqual(rows["G0_control"][0]["trace"].failure.code, "generation_error")
+        self.assertEqual(rows["G4_explicit_facts"][0]["experiment"], "G4_explicit_facts")
+        self.assertEqual(report["variants"]["G0_control"]["metrics"]["citation_evaluable_case_count"], 0)
 
     def test_unanswerable_no_source_case_accepts_the_approved_clarification_fallback(self):
         case = case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage")
