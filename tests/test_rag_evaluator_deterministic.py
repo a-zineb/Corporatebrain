@@ -281,6 +281,33 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(opportunities["affected_cases"][0]["exclusion_reason"], "relevant_candidate_ranked_below_final_context_cutoff")
         self.assertFalse(opportunities["gates"]["candidate_opportunity"]["met"])
 
+    def test_timeout_cases_are_checkpointed_and_excluded_from_quality_metrics(self):
+        timed_out = rag_evaluator.timeout_result(
+            case_for(self.content_hash), rag_evaluator.StageTimeoutError("generation", 1.0), 0.0, {}, lambda: 1.0
+        )
+        summary = rag_evaluator.aggregate([timed_out])
+        completeness = rag_evaluator.completeness_report([timed_out], 1)
+        self.assertIsNone(summary["recall_at_k"])
+        self.assertEqual(completeness["timeout_case_count"], 1)
+        self.assertFalse(completeness["baseline_comparison_allowed"])
+        self.assertEqual(completeness["quality_evaluable_case_count"], 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "run"
+            rag_evaluator.write_reports([timed_out], output, expected_case_count=2)
+            self.assertTrue((output / "completeness.json").exists())
+
+    def test_resume_retries_timeout_cases_but_skips_successful_cases(self):
+        timed_out = rag_evaluator.timeout_result(
+            case_for(self.content_hash), rag_evaluator.StageTimeoutError("generation", 1.0), 0.0, {}, lambda: 1.0
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "run"
+            rag_evaluator.write_reports([timed_out], output, expected_case_count=1)
+            with patch("rag_evaluator.evaluate_case", wraps=rag_evaluator.evaluate_case) as evaluate:
+                resumed = rag_evaluator.run_cases([case_for(self.content_hash)], self.runtime, FakeGenerator("Answer [SOURCE 1]"), output, resume=True)
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(len(resumed), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

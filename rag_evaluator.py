@@ -338,7 +338,7 @@ def run_experiment_matrix(
 def timeout_result(case: Mapping[str, Any], error: StageTimeoutError, started: float, stage_timings: Mapping[str, float], clock: Callable[[], float]) -> dict[str, Any]:
     """Record an incomplete case deterministically instead of hanging the evaluator."""
     trace = rag_pipeline.PipelineTrace(query=case["question"], failure=rag_pipeline.PipelineFailure(code=f"{error.stage}_timeout", message=str(error)))
-    return {"case_id": case["id"], "language": case["language"], "query_type": case["category"], "metadata_filter_state": "filtered" if case["metadata_filter"] else "unfiltered", "answerability": case["answerability"], "expected_behavior": case["expected_behavior"], "metrics": {"recall_at_k": 0.0, "precision_at_k": 0.0, "hit_rate_at_k": 0.0, "mrr": 0.0, "ndcg_at_k": 0.0, "citation_valid": None, "expected_source_match": None, "refusal_correct": None, "latency_ms": (clock() - started) * 1000}, "response": "", "trace": trace, "stage_timings_ms": dict(stage_timings)}
+    return {"case_id": case["id"], "language": case["language"], "query_type": case["category"], "metadata_filter_state": "filtered" if case["metadata_filter"] else "unfiltered", "answerability": case["answerability"], "expected_behavior": case["expected_behavior"], "metrics": {"recall_at_k": None, "precision_at_k": None, "hit_rate_at_k": None, "mrr": None, "ndcg_at_k": None, "citation_valid": None, "expected_source_match": None, "refusal_correct": None, "latency_ms": (clock() - started) * 1000}, "response": "", "trace": trace, "stage_timings_ms": dict(stage_timings)}
 
 
 def trace_to_json(trace: rag_pipeline.PipelineTrace) -> dict[str, Any]:
@@ -369,6 +369,30 @@ def trace_to_json(trace: rag_pipeline.PipelineTrace) -> dict[str, Any]:
             "total": trace.timings.total_ms,
         },
         "failure": {"code": trace.failure.code, "message": trace.failure.message} if trace.failure else None,
+    }
+
+
+def timeout_code(result: Mapping[str, Any]) -> str | None:
+    """Return the evaluator timeout code when a persisted case is incomplete."""
+
+    trace = result["trace"]
+    failure = trace.get("failure") if isinstance(trace, Mapping) else trace.failure
+    code = failure.get("code") if isinstance(failure, Mapping) else (failure.code if failure else None)
+    return code if code and code.endswith("_timeout") else None
+
+
+def completeness_report(results: Sequence[Mapping[str, Any]], expected_case_count: int) -> dict[str, Any]:
+    """Keep execution completeness separate from eligible quality metrics."""
+
+    timed_out = [result["case_id"] for result in results if timeout_code(result)]
+    completed = {result["case_id"] for result in results if not timeout_code(result)}
+    return {
+        "expected_case_count": expected_case_count,
+        "completed_case_count": len(completed),
+        "timeout_case_count": len(timed_out),
+        "timeout_case_ids": timed_out,
+        "quality_evaluable_case_count": len(completed),
+        "baseline_comparison_allowed": len(completed) == expected_case_count and not timed_out,
     }
 
 
@@ -563,7 +587,7 @@ def load_checkpoint(output_dir: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
-def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> None:
+def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path, *, expected_case_count: int | None = None) -> None:
     """Write reproducible JSON and Markdown reports below the ignored run directory."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -575,6 +599,10 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path) -> Non
         f"- {name}: {value}" for name, value in summary.items()
     ) + "\n"
     (output_dir / "summary.md").write_text(markdown, encoding="utf-8")
+    completeness = completeness_report(results, expected_case_count if expected_case_count is not None else len(results))
+    (output_dir / "completeness.json").write_text(
+        json.dumps(completeness, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     (output_dir / "segments.json").write_text(
         json.dumps(segmented_diagnostics(cases), ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -600,17 +628,15 @@ def run_cases(
     if case_timeout_seconds is not None and case_timeout_seconds <= 0:
         raise ValueError("case_timeout_seconds must be greater than zero.")
     results: list[Mapping[str, Any]] = load_checkpoint(output_dir) if resume else []
-    completed = {result["case_id"] for result in results}
+    completed = {result["case_id"] for result in results if not timeout_code(result)}
     for case in cases:
         if case["id"] in completed:
             continue
-        started = clock()
-        result = evaluate_case(case, runtime, generator, clock=clock, stage_timeout_seconds=stage_timeout_seconds)
-        elapsed = clock() - started
-        if case_timeout_seconds is not None and elapsed > case_timeout_seconds:
-            raise TimeoutError(f"Case {case['id']} exceeded {case_timeout_seconds} seconds after completion.")
+        effective_timeout = min(stage_timeout_seconds, case_timeout_seconds) if case_timeout_seconds is not None else stage_timeout_seconds
+        result = evaluate_case(case, runtime, generator, clock=clock, stage_timeout_seconds=effective_timeout)
+        results = [existing for existing in results if existing["case_id"] != case["id"]]
         results.append(result)
-        write_reports(results, output_dir)
+        write_reports(results, output_dir, expected_case_count=len(cases))
     return results
 
 
@@ -671,6 +697,7 @@ def main() -> None:
     parser.add_argument("--judge-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--resume", action="store_true", help="Resume from completed cases in --output-dir.")
     parser.add_argument("--case-timeout-seconds", type=float)
+    parser.add_argument("--require-complete", action="store_true", help="Block baseline comparison when persisted cases are incomplete or timed out.")
     parser.add_argument("--stage-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--limit-cases", type=int)
     parser.add_argument("--max-generation-tokens", type=int, default=256)
@@ -690,6 +717,8 @@ def main() -> None:
     )
     write_metadata_filter_audit(active_cases, runtime, results, output_dir)
     write_reranking_opportunity_diagnostics(active_cases, runtime, results, output_dir)
+    if args.require_complete and not completeness_report(results, len(active_cases))["baseline_comparison_allowed"]:
+        raise SystemExit("Baseline comparison blocked: inspect completeness.json and resume incomplete cases.")
     if args.experiment_matrix:
         matrix = run_experiment_matrix(active_cases, runtime, evaluator_generator, fixed_experiment_matrix(config), stage_timeout_seconds=args.stage_timeout_seconds)
         (output_dir / "retrieval_experiments.json").write_text(json.dumps(matrix, ensure_ascii=False, indent=2), encoding="utf-8")
