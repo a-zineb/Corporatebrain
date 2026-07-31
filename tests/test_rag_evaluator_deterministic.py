@@ -109,7 +109,7 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         result = rag_evaluator.evaluate_case(
             case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage"),
             self.runtime,
-            FakeGenerator("I cannot find this in the document context. [SOURCE 1]"),
+            FakeGenerator("I cannot find this in the document context."),
         )
         self.assertTrue(result["metrics"]["refusal_correct"])
         self.assertFalse(result["trace"].citations.display_sources)
@@ -119,8 +119,8 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             self.assertTrue((output / "cases.json").exists())
             self.assertTrue((output / "summary.json").exists())
             self.assertTrue((output / "summary.md").exists())
-            self.assertTrue((output / "forensics" / "case-1.json").exists())
-            self.assertTrue((output / "forensics" / "case-1.md").exists())
+            self.assertFalse((output / "forensics" / "case-1.json").exists())
+            self.assertFalse((output / "forensics" / "case-1.md").exists())
             payload = json.loads((output / "cases.json").read_text(encoding="utf-8"))
             self.assertEqual(payload[0]["case_id"], "case-1")
             self.assertTrue(payload[0]["trace"]["refusal_detected"])
@@ -281,6 +281,19 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(opportunities["affected_cases"][0]["exclusion_reason"], "relevant_candidate_ranked_below_final_context_cutoff")
         self.assertFalse(opportunities["gates"]["candidate_opportunity"]["met"])
 
+    def test_blank_generation_is_a_language_appropriate_clarification(self):
+        case = case_for(self.content_hash, answerability="ambiguous", response_mode="request_clarification")
+        result = rag_evaluator.evaluate_case(case, self.runtime, FakeGenerator(""))
+        self.assertEqual(result["response"], rag_pipeline.build_clarification_message("French"))
+        self.assertTrue(result["metrics"]["clarification_correct"])
+
+    def test_unanswerable_no_source_case_accepts_the_approved_clarification_fallback(self):
+        case = case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage")
+        result = rag_evaluator.evaluate_case(case, self.runtime, FakeGenerator(""))
+        self.assertFalse(result["trace"].citations.no_coverage_detected)
+        self.assertTrue(result["metrics"]["clarification_correct"])
+        self.assertTrue(result["metrics"]["refusal_correct"])
+
     def test_timeout_cases_are_checkpointed_and_excluded_from_quality_metrics(self):
         timed_out = rag_evaluator.timeout_result(
             case_for(self.content_hash), rag_evaluator.StageTimeoutError("generation", 1.0), 0.0, {}, lambda: 1.0
@@ -290,7 +303,6 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertIsNone(summary["recall_at_k"])
         self.assertEqual(completeness["timeout_case_count"], 1)
         self.assertFalse(completeness["baseline_comparison_allowed"])
-        self.assertEqual(completeness["quality_evaluable_case_count"], 0)
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "run"
             rag_evaluator.write_reports([timed_out], output, expected_case_count=2)

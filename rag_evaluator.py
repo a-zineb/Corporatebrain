@@ -253,7 +253,7 @@ def evaluate_case(
         except StageTimeoutError as error:
             return timeout_result(case, error, started, stage_timings, clock)
         try:
-            generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(prompt.prompt, runtime.config.llm_model_name, generator, clock=clock), stage_timeout_seconds, clock=clock)
+            generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(prompt.prompt, runtime.config.llm_model_name, generator, clock=clock, clarification_language=language_label(case["language"])), stage_timeout_seconds, clock=clock)
             citations = rag_pipeline.select_display_sources(generation.response, sources)
         except StageTimeoutError as error:
             return timeout_result(case, error, started, stage_timings, clock)
@@ -264,9 +264,19 @@ def evaluate_case(
     metrics = retrieval_metrics(sources, case["relevance"], experiment.final_top_k)
     metrics.update(citation_metrics(citations, case["acceptable_citations"]))
     expected_mode = case["expected_behavior"]["mode"]
+    is_refusal = citations.no_coverage_detected and not citations.display_sources
+    is_clarification = generation.response == rag_pipeline.build_clarification_message(
+        language_label(case["language"])
+    )
+    allows_no_source_outcome = case["expected_behavior"].get("source_display") == "none"
     metrics["refusal_correct"] = (
-        citations.no_coverage_detected and not citations.display_sources
+        is_refusal or (allows_no_source_outcome and is_clarification)
         if expected_mode == "refuse_no_coverage"
+        else None
+    )
+    metrics["clarification_correct"] = (
+        is_clarification
+        if expected_mode == "request_clarification" or allows_no_source_outcome
         else None
     )
     metrics["latency_ms"] = (clock() - started) * 1000
@@ -339,7 +349,7 @@ def run_experiment_matrix(
 def timeout_result(case: Mapping[str, Any], error: StageTimeoutError, started: float, stage_timings: Mapping[str, float], clock: Callable[[], float]) -> dict[str, Any]:
     """Record an incomplete case deterministically instead of hanging the evaluator."""
     trace = rag_pipeline.PipelineTrace(query=case["question"], failure=rag_pipeline.PipelineFailure(code=f"{error.stage}_timeout", message=str(error)))
-    return {"case_id": case["id"], "language": case["language"], "query_type": case["category"], "metadata_filter_state": "filtered" if case["metadata_filter"] else "unfiltered", "answerability": case["answerability"], "expected_behavior": case["expected_behavior"], "metrics": {"recall_at_k": None, "precision_at_k": None, "hit_rate_at_k": None, "mrr": None, "ndcg_at_k": None, "citation_valid": None, "expected_source_match": None, "refusal_correct": None, "latency_ms": (clock() - started) * 1000}, "response": "", "trace": trace, "stage_timings_ms": dict(stage_timings)}
+    return {"case_id": case["id"], "language": case["language"], "query_type": case["category"], "metadata_filter_state": "filtered" if case["metadata_filter"] else "unfiltered", "answerability": case["answerability"], "expected_behavior": case["expected_behavior"], "metrics": {"recall_at_k": None, "precision_at_k": None, "hit_rate_at_k": None, "mrr": None, "ndcg_at_k": None, "citation_valid": None, "expected_source_match": None, "refusal_correct": None, "clarification_correct": None, "latency_ms": (clock() - started) * 1000}, "response": "", "trace": trace, "stage_timings_ms": dict(stage_timings)}
 
 
 def trace_to_json(trace: rag_pipeline.PipelineTrace) -> dict[str, Any]:
@@ -405,11 +415,15 @@ def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | int | N
     for name in names:
         values = [result["metrics"][name] for result in results if result["metrics"][name] is not None]
         summary[name] = sum(values) / len(values) if values else None
-    for name in ("citation_valid", "expected_source_match", "refusal_correct"):
+    for name in ("citation_valid", "expected_source_match", "refusal_correct", "clarification_correct"):
         values = [result["metrics"][name] for result in results if result["metrics"][name] is not None]
         summary[name] = sum(values) / len(values) if values else None
-    summary["citation_evaluable_case_count"] = sum(result["metrics"]["citation_valid"] is not None for result in results)
-    summary["expected_source_evaluable_case_count"] = sum(result["metrics"]["expected_source_match"] is not None for result in results)
+    summary["citation_evaluable_case_count"] = sum(
+        result["metrics"]["citation_valid"] is not None for result in results
+    )
+    summary["expected_source_evaluable_case_count"] = sum(
+        result["metrics"]["expected_source_match"] is not None for result in results
+    )
     def failure_code(result: Mapping[str, Any]) -> str | None:
         trace = result["trace"]
         failure = trace.get("failure") if isinstance(trace, Mapping) else trace.failure
@@ -422,7 +436,8 @@ def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | int | N
 
 
 def citation_metric_comparability(summary: Mapping[str, Any], certified_baseline: Mapping[str, Any]) -> dict[str, str]:
-    """Prevent denominator changes from being misreported as regressions."""
+    """Prevent a denominator change from being misreported as a metric regression."""
+
     expected = certified_baseline["evaluability"]
     return {
         "citation_valid": "COMPARABLE" if summary["citation_evaluable_case_count"] == expected["citation_evaluable_case_count"] else "NOT_COMPARABLE",

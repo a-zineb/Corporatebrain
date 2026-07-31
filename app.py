@@ -512,6 +512,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         selected_model,
                         ollama,
                         on_token=lambda response: response_placeholder.markdown(response + "▌"),
+                        clarification_language=current_lang,
                     )
                     full_stream_response = generation_result.response
                     response_placeholder.markdown(full_stream_response)

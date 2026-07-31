@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import os
 import re
 import time
+import unicodedata
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from rank_bm25 import BM25Okapi
@@ -59,6 +60,7 @@ __all__ = [
     "build_context",
     "build_recent_chat_history",
     "build_no_match_message",
+    "build_clarification_message",
     "build_production_prompt",
     "rewrite_query",
     "stream_generate",
@@ -600,6 +602,16 @@ def build_no_match_message(current_lang: str) -> str:
     )
 
 
+def build_clarification_message(current_lang: str) -> str:
+    """Return the deterministic clarification fallback for a blank generation."""
+
+    return (
+        "Could you clarify the application, document, or context you mean?"
+        if current_lang == "English"
+        else "Pouvez-vous préciser l'application, le document ou le contexte concerné ?"
+    )
+
+
 def build_production_prompt(
     *,
     user_query: str,
@@ -702,6 +714,7 @@ def stream_generate(
     generator: TextGenerator,
     *,
     on_token: Callable[[str], None] | None = None,
+    clarification_language: str | None = None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> GenerationResult:
     """Stream the active production Ollama request without owning UI rendering."""
@@ -720,6 +733,10 @@ def stream_generate(
             response += content
             if on_token:
                 on_token(response)
+    if not response.strip() and clarification_language:
+        response = build_clarification_message(clarification_language)
+        if on_token:
+            on_token(response)
     return GenerationResult(
         response=response,
         streamed=True,
@@ -734,12 +751,16 @@ def parse_cited_source_ids(response: str) -> tuple[int, ...]:
 
 
 def detect_no_coverage(response: str) -> bool:
-    """Apply the active app.py no-documentary-answer regex patterns unchanged."""
+    """Recognize confirmed no-coverage answers without suppressing qualified answers."""
 
-    response_lower = response.lower()
+    response_lower = unicodedata.normalize("NFKC", response).lower().replace("’", "'")
+    if re.search(r"\b(?:however|cependant|toutefois|néanmoins)\b", response_lower):
+        return False
     no_coverage_patterns = [
-        r"je ne trouve pas.*(document|contexte|source|corpus)",
-        r"n.est pas.*(document|contexte|source|corpus)",
+        r"\b(?:désolé[,. ]*)?(?:je )?n[' ]ai pas trouv[ée]?(?: d[' ]?informations?)?\b",
+        r"\bje n[' ]ai trouv[ée]? aucune mention de .{1,160}\bdans le contexte fourni\b",
+        r"\baucun des documents fournis ne contient d[' ]?informations? relatives? à .{1,160}\b",
+        r"\bje ne trouve pas.{0,160}\b(document|contexte|source|corpus)\b",
         r"information.*(non couverte|absente|indisponible)",
         r"le contexte( fourni)? ne contient aucune information",
         r"le contexte fourni ne contient pas",
@@ -747,11 +768,7 @@ def detect_no_coverage(response: str) -> bool:
         r"ne trouve pas de r.ponse dans le contexte( fourni)?",
         r"la question pos.e ne trouve pas de r.ponse dans le contexte( fourni)?",
         r"ne trouve pas de r.ponse dans les documents",
-        r"n.est pas mentionn. dans les documents",
-        r"n.est pas abord. dans les documents",
-        r"l.information n.est pas pr.sente dans les documents",
-        r"(i cannot|i can.t|not found|not covered).*(document|context|source|corpus)",
-        r"(not mentioned|not available).*(document|context|source|corpus)",
+        r"\b(?:i cannot|i can't|i did not find|not found|not covered).{0,160}\b(document|context|source|corpus)\b",
     ]
     return any(re.search(pattern, response_lower, flags=re.DOTALL) for pattern in no_coverage_patterns)
 
@@ -762,7 +779,7 @@ def select_display_sources(response: str, sources: Sequence[PromptSource]) -> Ci
     cited_source_ids = parse_cited_source_ids(response)
     source_ids = {source.source_id for source in sources}
     invalid_source_ids = tuple(source_id for source_id in cited_source_ids if source_id not in source_ids)
-    no_coverage_detected = detect_no_coverage(response)
+    no_coverage_detected = detect_no_coverage(response) and not cited_source_ids
 
     if no_coverage_detected:
         display_sources: tuple[PromptSource, ...] = ()

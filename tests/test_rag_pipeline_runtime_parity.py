@@ -173,6 +173,11 @@ class RuntimeParityTests(unittest.TestCase):
                 "certified prompt", "qwen3:8b", RecordingGenerator(error=RuntimeError("offline"))
             )
 
+        clarification = rag_pipeline.stream_generate(
+            "certified prompt", "qwen3:8b", RecordingGenerator(stream=[]), clarification_language="French"
+        )
+        self.assertEqual(clarification.response, rag_pipeline.build_clarification_message("French"))
+
 
 if __name__ == "__main__":
     unittest.main()

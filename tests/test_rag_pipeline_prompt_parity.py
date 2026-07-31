@@ -172,7 +172,7 @@ class PromptParityTests(unittest.TestCase):
         self.assertEqual(invalid.invalid_source_ids, (99,))
         self.assertEqual(invalid.display_sources, ())
 
-    def test_every_legacy_no_coverage_pattern_suppresses_sources(self):
+    def test_confirmed_refusals_suppress_sources_and_qualified_answers_preserve_them(self):
         sources = rag_pipeline.build_source_list(
             ["A"],
             [{"source_file": "one.pdf", "location": "Page 1"}],
@@ -194,11 +194,24 @@ class PromptParityTests(unittest.TestCase):
             "I cannot find this in the document context. [SOURCE 1]",
             "Not mentioned in the source. [SOURCE 1]",
         ]
-        for response in responses:
-            self.assertTrue(legacy_no_coverage(response))
+        for response in (
+            "Désolé, je n'ai pas trouvé d'information sur ce sujet.",
+            "Je n’ai pas trouvé d'informations dans le contexte fourni.",
+            "Je n'ai trouvé aucune mention de numéro de sécurité sociale dans le contexte fourni.",
+            "Désolé, mais aucun des documents fournis ne contient d'informations relatives à un numéro de sécurité sociale.",
+            "I cannot find this in the document context.",
+        ):
             result = rag_pipeline.select_display_sources(response, sources)
             self.assertTrue(result.no_coverage_detected)
             self.assertEqual(result.display_sources, ())
+        qualified = "Ce point n'est pas explicitement mentionné. Cependant, [SOURCE 1] apporte un élément pertinent."
+        result = rag_pipeline.select_display_sources(qualified, sources)
+        self.assertFalse(result.no_coverage_detected)
+        self.assertEqual([source.source_id for source in result.display_sources], [1])
+        clarification = rag_pipeline.select_display_sources(
+            "Pouvez-vous préciser l'application, le document ou le contexte concerné ?", sources
+        )
+        self.assertFalse(clarification.no_coverage_detected)
 
     def test_display_deduplication_keeps_first_matching_legacy_ui_order(self):
         sources = (

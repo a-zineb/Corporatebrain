@@ -217,8 +217,8 @@ class AppPipelineIntegrationTests(unittest.TestCase):
 
         refusal = "I cannot find this in the document context. [SOURCE 1]"
         refusal_result = rag_pipeline.select_display_sources(refusal, integrated_sources)
-        self.assertTrue(refusal_result.no_coverage_detected)
-        self.assertEqual(refusal_result.display_sources, ())
+        self.assertFalse(refusal_result.no_coverage_detected)
+        self.assertEqual([source.source_id for source in refusal_result.display_sources], [1])
 
 
 if __name__ == "__main__":

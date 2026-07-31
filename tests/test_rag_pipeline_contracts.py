@@ -96,6 +96,7 @@ class RAGPipelineContractTests(unittest.TestCase):
                 "build_context",
                 "build_recent_chat_history",
                 "build_no_match_message",
+                "build_clarification_message",
                 "build_production_prompt",
                 "rewrite_query",
                 "stream_generate",
