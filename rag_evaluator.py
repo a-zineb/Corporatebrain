@@ -54,6 +54,23 @@ class RetrievalExperiment:
     rrf_k: int = 60
 
 
+@dataclass(frozen=True, slots=True)
+class ContextGroundingExperiment:
+    """Evaluator-only presentation of one unchanged retrieved context."""
+
+    name: str
+    strategy: str
+    max_sources: int | None = None
+
+
+GROUNDING_EXPERIMENTS: tuple[ContextGroundingExperiment, ...] = (
+    ContextGroundingExperiment("G0_control", "control"),
+    ContextGroundingExperiment("G1_evidence_first", "evidence_first"),
+    ContextGroundingExperiment("G2_deduplicated_context", "deduplicated"),
+    ContextGroundingExperiment("G3_focused_context", "focused", max_sources=5),
+)
+
+
 def certified_control(config: rag_pipeline.RAGConfig) -> RetrievalExperiment:
     """Represent the approved production configuration without changing it."""
 
@@ -316,6 +333,238 @@ def evaluate_case(
         "trace": trace,
         "stage_timings_ms": stage_timings,
     }
+
+
+def source_record(source: rag_pipeline.PromptSource) -> dict[str, Any]:
+    """Serialize one evaluator context source without changing its content."""
+
+    return {
+        "source_id": source.source_id,
+        "content_sha256": source_hash(source),
+        "file_name": source.file_name,
+        "location": source.location,
+    }
+
+
+def grounding_context(
+    sources: Sequence[rag_pipeline.PromptSource], relevance: Sequence[Mapping[str, Any]],
+    experiment: ContextGroundingExperiment,
+) -> tuple[tuple[rag_pipeline.PromptSource, ...], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return an evaluator-only ordering/subset of already selected sources.
+
+    G1 and G3 use benchmark annotations only to measure an upper-bound context
+    presentation.  They never alter retrieval candidates, RRF scores, or the
+    production source list.
+    """
+
+    original = tuple(sources)
+    expected = {item["content_sha256"] for item in relevance if item.get("label", 0) > 0}
+    if experiment.strategy == "control":
+        retained = original
+        reasons: dict[int, str] = {}
+    elif experiment.strategy == "evidence_first":
+        retained = tuple(sorted(
+            original,
+            key=lambda source: (source_hash(source) not in expected, source.source_id),
+        ))
+        reasons = {}
+    elif experiment.strategy == "deduplicated":
+        seen: set[str] = set()
+        retained_items = []
+        reasons = {}
+        for source in original:
+            content_id = source_hash(source)
+            if content_id in seen:
+                reasons[source.source_id] = "duplicate_content"
+                continue
+            seen.add(content_id)
+            retained_items.append(source)
+        retained = tuple(retained_items)
+    elif experiment.strategy == "focused":
+        ranked = tuple(sorted(
+            original,
+            key=lambda source: (source_hash(source) not in expected, source.source_id),
+        ))
+        retained = ranked[:experiment.max_sources]
+        reasons = {source.source_id: "outside_focused_bound" for source in ranked[experiment.max_sources:]}
+    else:
+        raise ValueError(f"Unsupported grounding strategy: {experiment.strategy}")
+    retained_ids = {source.source_id for source in retained}
+    dropped = [
+        {**source_record(source), "reason": reasons.get(source.source_id, "not_retained")}
+        for source in original if source.source_id not in retained_ids
+    ]
+    return retained, [source_record(source) for source in retained], dropped
+
+
+def grounding_quality_metrics(
+    case: Mapping[str, Any], response: str, sources: Sequence[rag_pipeline.PromptSource],
+) -> dict[str, bool | None]:
+    """Measure exact benchmark answer-point use with explicit prompt support."""
+
+    if case["answerability"] != "answerable":
+        return {"grounded_answer_correct": None, "answer_use": None, "blank_output": not response.strip()}
+    normalized = response.casefold()
+    answer_points = [str(point).casefold() for point in case.get("acceptable_answer_points", [])]
+    answer_used = bool(answer_points) and all(point in normalized for point in answer_points)
+    expected_hashes = {item["content_sha256"] for item in case["relevance"] if item["label"] > 0}
+    context_hashes = {source_hash(source) for source in sources}
+    return {
+        "grounded_answer_correct": answer_used and expected_hashes <= context_hashes,
+        "answer_use": answer_used,
+        "blank_output": not response.strip(),
+    }
+
+
+def retrieval_parity(control: rag_pipeline.PipelineTrace, variant: rag_pipeline.PipelineTrace) -> bool:
+    """Prove a context experiment retained the exact certified retrieval trace."""
+
+    return (
+        control.query == variant.query
+        and control.rewritten_query == variant.rewritten_query
+        and control.metadata_filter == variant.metadata_filter
+        and control.retrieval == variant.retrieval
+    )
+
+
+def evaluate_grounding_variant(
+    case: Mapping[str, Any], control: Mapping[str, Any], runtime: EvaluationRuntime,
+    generator: rag_pipeline.TextGenerator, experiment: ContextGroundingExperiment,
+    *, clock: Callable[[], float] = time.perf_counter, stage_timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Generate from an alternate evaluator context while preserving retrieval exactly."""
+
+    control_trace = control["trace"]
+    if not isinstance(control_trace, rag_pipeline.PipelineTrace):
+        raise ValueError("Grounding experiments require an in-memory certified control trace.")
+    if control_trace.failure or not control_trace.prompt:
+        skipped = dict(control)
+        skipped["experiment"] = experiment.name
+        skipped["grounding_context"] = {
+            "retained_chunks": [], "dropped_chunks": [], "retrieval_parity": True,
+        }
+        return skipped
+    sources, retained, dropped = grounding_context(control_trace.prompt.sources, case["relevance"], experiment)
+    started = clock()
+    stage_timings: dict[str, float] = {}
+    try:
+        prompt, stage_timings["prompt_construction"] = run_stage("prompt_construction", lambda: rag_pipeline.build_production_prompt(
+            user_query=case["question"], filter_ent="Tous", filter_application="Tous",
+            history=case["conversation"], sources=sources,
+            current_lang=language_label(case["language"]),
+            was_relaxed=bool(control_trace.retrieval and control_trace.retrieval.fallback_used),
+        ), stage_timeout_seconds, clock=clock)
+        generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(
+            prompt.prompt, runtime.config.llm_model_name, generator, clock=clock,
+            clarification_language=language_label(case["language"]),
+        ), stage_timeout_seconds, clock=clock)
+    except StageTimeoutError as error:
+        result = timeout_result(case, error, started, stage_timings, clock)
+        result["experiment"] = experiment.name
+        result["grounding_context"] = {"retained_chunks": retained, "dropped_chunks": dropped, "retrieval_parity": True}
+        return result
+    citations = rag_pipeline.select_display_sources(generation.response, sources)
+    metrics = dict(control["metrics"])
+    metrics.update(citation_metrics(citations, case["acceptable_citations"]))
+    expected_mode = case["expected_behavior"]["mode"]
+    is_refusal = citations.no_coverage_detected and not citations.display_sources
+    is_clarification = generation.response == rag_pipeline.build_clarification_message(language_label(case["language"]))
+    allows_no_source_outcome = case["expected_behavior"].get("source_display") == "none"
+    metrics["refusal_correct"] = (
+        is_refusal or (allows_no_source_outcome and is_clarification)
+        if expected_mode == "refuse_no_coverage" else None
+    )
+    metrics["clarification_correct"] = (
+        is_clarification if expected_mode == "request_clarification" or allows_no_source_outcome else None
+    )
+    metrics.update(grounding_quality_metrics(case, generation.response, sources))
+    metrics["latency_ms"] = (clock() - started) * 1000
+    trace = rag_pipeline.PipelineTrace(
+        query=control_trace.query, rewritten_query=control_trace.rewritten_query,
+        language=control_trace.language, metadata_filter=control_trace.metadata_filter,
+        retrieval=control_trace.retrieval, prompt=prompt, generation=generation, citations=citations,
+        timings=rag_pipeline.PipelineTimings(
+            rewrite_ms=control_trace.timings.rewrite_ms,
+            generation_ms=generation.latency_ms, total_ms=metrics["latency_ms"],
+        ),
+    )
+    return {
+        "case_id": case["id"], "experiment": experiment.name, "language": case["language"],
+        "query_type": case["category"],
+        "metadata_filter_state": "filtered" if control_trace.metadata_filter else "unfiltered",
+        "answerability": case["answerability"], "expected_behavior": case["expected_behavior"],
+        "metrics": metrics, "response": generation.response, "trace": trace,
+        "stage_timings_ms": stage_timings,
+        "grounding_context": {
+            "retained_chunks": retained, "dropped_chunks": dropped,
+            "retrieval_parity": retrieval_parity(control_trace, trace),
+        },
+    }
+
+
+def grounding_experiment_report(results: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, Any]:
+    """Summarize G0-G3 quality evidence without selecting a production winner."""
+
+    variants: dict[str, Any] = {}
+    for name, rows in results.items():
+        serialized = [result_to_json(row) for row in rows]
+        quality = {
+            metric: (
+                sum(bool(row["metrics"].get(metric)) for row in rows if row["metrics"].get(metric) is not None)
+                / sum(row["metrics"].get(metric) is not None for row in rows)
+                if any(row["metrics"].get(metric) is not None for row in rows) else None
+            )
+            for metric in ("grounded_answer_correct", "answer_use", "blank_output")
+        }
+        forensic_counts: dict[str, int] = {}
+        for row in serialized:
+            category = row.get("forensic_category", "unknown")
+            forensic_counts[category] = forensic_counts.get(category, 0) + 1
+        variants[name] = {
+            "metrics": {**aggregate(rows), **quality},
+            "retrieval_parity": all(row.get("grounding_context", {}).get("retrieval_parity", True) for row in rows),
+            "forensic_counts": forensic_counts,
+        }
+    return {"control": "G0_control", "variants": variants}
+
+
+def run_grounding_experiments(
+    cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
+    *, stage_timeout_seconds: float = 120.0,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """Run G0-G3 from one retrieval execution per case and return ignored-run artifacts."""
+
+    rows: dict[str, list[dict[str, Any]]] = {experiment.name: [] for experiment in GROUNDING_EXPERIMENTS}
+    for case in cases:
+        control = evaluate_case(case, runtime, generator, stage_timeout_seconds=stage_timeout_seconds)
+        control_sources = control["trace"].prompt.sources if isinstance(control["trace"], rag_pipeline.PipelineTrace) and control["trace"].prompt else ()
+        retained, retained_records, dropped = grounding_context(control_sources, case["relevance"], GROUNDING_EXPERIMENTS[0])
+        control = dict(control)
+        control["experiment"] = GROUNDING_EXPERIMENTS[0].name
+        control["metrics"] = {**control["metrics"], **grounding_quality_metrics(case, control["response"], retained)}
+        control["grounding_context"] = {"retained_chunks": retained_records, "dropped_chunks": dropped, "retrieval_parity": True}
+        rows[GROUNDING_EXPERIMENTS[0].name].append(control)
+        for experiment in GROUNDING_EXPERIMENTS[1:]:
+            rows[experiment.name].append(evaluate_grounding_variant(
+                case, control, runtime, generator, experiment, stage_timeout_seconds=stage_timeout_seconds,
+            ))
+    return grounding_experiment_report(rows), rows
+
+
+def write_grounding_experiment_report(report: Mapping[str, Any], rows: Mapping[str, Sequence[Mapping[str, Any]]], output_dir: Path) -> None:
+    """Persist G0-G3 reports only below the ignored evaluator-run directory."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        name: [
+            {**result_to_json(row), "grounding_context": row.get("grounding_context", {})}
+            for row in variant_rows
+        ]
+        for name, variant_rows in rows.items()
+    }
+    (output_dir / "context_grounding_experiments.json").write_text(
+        json.dumps({"summary": report, "cases": payload}, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def experiment_summary(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -731,6 +980,7 @@ def main() -> None:
     parser.add_argument("--limit-cases", type=int)
     parser.add_argument("--max-generation-tokens", type=int, default=256)
     parser.add_argument("--experiment-matrix", action="store_true", help="Run fixed evaluator-only retrieval variants.")
+    parser.add_argument("--context-grounding-experiments", action="store_true", help="Run evaluator-only G0-G3 context experiments.")
     args = parser.parse_args()
     config = rag_pipeline.RAGConfig()
     runtime = load_runtime(config, stage_timeout_seconds=args.stage_timeout_seconds)
@@ -740,10 +990,17 @@ def main() -> None:
     output_dir = args.output_dir or DEFAULT_RUNS_DIR / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     benchmark_cases = load_cases(args.benchmark)
     active_cases = benchmark_cases[:args.limit_cases] if args.limit_cases else benchmark_cases
-    results = run_cases(
-        active_cases, runtime, evaluator_generator, output_dir, resume=args.resume,
-        case_timeout_seconds=args.case_timeout_seconds, stage_timeout_seconds=args.stage_timeout_seconds,
-    )
+    if args.context_grounding_experiments:
+        report, grounding_rows = run_grounding_experiments(
+            active_cases, runtime, evaluator_generator, stage_timeout_seconds=args.stage_timeout_seconds,
+        )
+        write_grounding_experiment_report(report, grounding_rows, output_dir)
+        results = grounding_rows["G0_control"]
+    else:
+        results = run_cases(
+            active_cases, runtime, evaluator_generator, output_dir, resume=args.resume,
+            case_timeout_seconds=args.case_timeout_seconds, stage_timeout_seconds=args.stage_timeout_seconds,
+        )
     write_metadata_filter_audit(active_cases, runtime, results, output_dir)
     write_reranking_opportunity_diagnostics(active_cases, runtime, results, output_dir)
     if args.require_complete and not completeness_report(results, len(active_cases))["baseline_comparison_allowed"]:

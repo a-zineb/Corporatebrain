@@ -72,6 +72,7 @@ def case_for(content_hash, *, answerability="answerable", response_mode="answer"
         "metadata_filter": {},
         "relevance": relevance,
         "acceptable_citations": citations,
+        "acceptable_answer_points": ["alpha"] if answerability == "answerable" else [],
         "answerability": answerability,
         "expected_behavior": {"mode": response_mode, "source_display": "none" if response_mode != "answer" else "expected"},
     }
@@ -263,6 +264,55 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertIn("recall_at_k", report["variants"]["fusion_depth_5"]["metrics"])
         self.assertIn("fallback_rate", report["variants"]["fallback_threshold_5"])
         self.assertIn("forensic_counts", report["variants"]["candidate_depth_20"])
+
+    def test_grounding_context_orders_deduplicates_and_bounds_existing_sources(self):
+        sources = (
+            rag_pipeline.PromptSource(1, "noise.pdf", "Page 1", "noise", "noise.pdf"),
+            rag_pipeline.PromptSource(2, "answer.pdf", "Page 1", "alpha", "answer.pdf"),
+            rag_pipeline.PromptSource(3, "duplicate.pdf", "Page 2", "noise", "duplicate.pdf"),
+        )
+        answer_hash = hashlib.sha256(b"alpha").hexdigest()
+        evidence_first, _, _ = rag_evaluator.grounding_context(
+            sources, [{"content_sha256": answer_hash, "label": 2}], rag_evaluator.GROUNDING_EXPERIMENTS[1]
+        )
+        deduplicated, _, duplicates = rag_evaluator.grounding_context(
+            sources, [], rag_evaluator.GROUNDING_EXPERIMENTS[2]
+        )
+        focused, _, bounded = rag_evaluator.grounding_context(
+            sources, [{"content_sha256": answer_hash, "label": 2}],
+            rag_evaluator.ContextGroundingExperiment("test", "focused", max_sources=1),
+        )
+        self.assertEqual([source.source_id for source in evidence_first], [2, 1, 3])
+        self.assertEqual([source.source_id for source in deduplicated], [1, 2])
+        self.assertEqual(duplicates[0]["reason"], "duplicate_content")
+        self.assertEqual([source.source_id for source in focused], [2])
+        self.assertEqual({item["reason"] for item in bounded}, {"outside_focused_bound"})
+
+    def test_grounding_experiments_reuse_one_control_retrieval_and_report_parity(self):
+        case = case_for(self.content_hash)
+        report, rows = rag_evaluator.run_grounding_experiments(
+            [case], self.runtime, FakeGenerator("alpha [SOURCE 1]")
+        )
+        self.assertEqual(len(self.runtime.collection.calls), 1)
+        self.assertEqual(set(rows), {"G0_control", "G1_evidence_first", "G2_deduplicated_context", "G3_focused_context"})
+        self.assertTrue(all(report["variants"][name]["retrieval_parity"] for name in rows))
+        self.assertEqual(report["variants"]["G0_control"]["metrics"]["answer_use"], 1.0)
+        self.assertEqual(report["variants"]["G0_control"]["metrics"]["grounded_answer_correct"], 1.0)
+        with tempfile.TemporaryDirectory() as temporary:
+            rag_evaluator.write_grounding_experiment_report(report, rows, Path(temporary))
+            payload = json.loads((Path(temporary) / "context_grounding_experiments.json").read_text(encoding="utf-8"))
+            self.assertTrue(payload["summary"]["variants"]["G3_focused_context"]["retrieval_parity"])
+
+    def test_grounding_variant_preserves_variant_label_after_control_timeout(self):
+        control = rag_evaluator.timeout_result(
+            case_for(self.content_hash), rag_evaluator.StageTimeoutError("generation", 1.0), 0.0, {}, lambda: 1.0
+        )
+        variant = rag_evaluator.evaluate_grounding_variant(
+            case_for(self.content_hash), control, self.runtime, FakeGenerator("alpha"),
+            rag_evaluator.GROUNDING_EXPERIMENTS[1],
+        )
+        self.assertEqual(variant["experiment"], "G1_evidence_first")
+        self.assertTrue(variant["grounding_context"]["retrieval_parity"])
 
     def test_reranking_opportunities_identify_ranking_only_misses(self):
         relevant_hash = self.content_hash
