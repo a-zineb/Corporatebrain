@@ -296,6 +296,14 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             rag_evaluator.write_reports([timed_out], output, expected_case_count=2)
             self.assertTrue((output / "completeness.json").exists())
 
+    def test_citation_denominator_mismatch_is_not_comparable(self):
+        summary = {"citation_evaluable_case_count": 0, "expected_source_evaluable_case_count": 0}
+        baseline = {"evaluability": {"citation_evaluable_case_count": 9, "expected_source_evaluable_case_count": 9}}
+        self.assertEqual(
+            rag_evaluator.citation_metric_comparability(summary, baseline),
+            {"citation_valid": "NOT_COMPARABLE", "expected_source_match": "NOT_COMPARABLE"},
+        )
+
     def test_resume_retries_timeout_cases_but_skips_successful_cases(self):
         timed_out = rag_evaluator.timeout_result(
             case_for(self.content_hash), rag_evaluator.StageTimeoutError("generation", 1.0), 0.0, {}, lambda: 1.0

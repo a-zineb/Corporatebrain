@@ -26,6 +26,7 @@ import rag_pipeline
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_BENCHMARK = PROJECT_ROOT / "benchmarks" / "corporatebrain.v1.jsonl"
 DEFAULT_RUNS_DIR = PROJECT_ROOT / "evaluation_runs"
+CERTIFIED_BASELINE = PROJECT_ROOT / "baselines" / "corporatebrain.v1.baseline.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +408,8 @@ def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | int | N
     for name in ("citation_valid", "expected_source_match", "refusal_correct"):
         values = [result["metrics"][name] for result in results if result["metrics"][name] is not None]
         summary[name] = sum(values) / len(values) if values else None
+    summary["citation_evaluable_case_count"] = sum(result["metrics"]["citation_valid"] is not None for result in results)
+    summary["expected_source_evaluable_case_count"] = sum(result["metrics"]["expected_source_match"] is not None for result in results)
     def failure_code(result: Mapping[str, Any]) -> str | None:
         trace = result["trace"]
         failure = trace.get("failure") if isinstance(trace, Mapping) else trace.failure
@@ -416,6 +419,15 @@ def aggregate(results: Sequence[Mapping[str, Any]]) -> dict[str, float | int | N
         bool(result.get("response")) and failure_code(result) is None for result in results
     )
     return summary
+
+
+def citation_metric_comparability(summary: Mapping[str, Any], certified_baseline: Mapping[str, Any]) -> dict[str, str]:
+    """Prevent denominator changes from being misreported as regressions."""
+    expected = certified_baseline["evaluability"]
+    return {
+        "citation_valid": "COMPARABLE" if summary["citation_evaluable_case_count"] == expected["citation_evaluable_case_count"] else "NOT_COMPARABLE",
+        "expected_source_match": "COMPARABLE" if summary["expected_source_evaluable_case_count"] == expected["expected_source_evaluable_case_count"] else "NOT_COMPARABLE",
+    }
 
 
 def result_to_json(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -593,6 +605,8 @@ def write_reports(results: Sequence[Mapping[str, Any]], output_dir: Path, *, exp
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = [result_to_json(result) for result in results]
     summary = aggregate(results)
+    baseline = json.loads(CERTIFIED_BASELINE.read_text(encoding="utf-8"))
+    summary["citation_metric_comparability"] = citation_metric_comparability(summary, baseline)
     (output_dir / "cases.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown = "# Deterministic RAG evaluation\n\n" + "\n".join(

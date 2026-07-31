@@ -30,6 +30,10 @@
     "refusal_correct": 0.3333333333333333,
     "mean_latency_ms": 186587.58386249733
   },
+  "evaluability": {
+    "citation_evaluable_case_count": 9,
+    "expected_source_evaluable_case_count": 9
+  },
   "generation": {
     "successful_generation_count": 19,
     "generation_timeout_count": 0
