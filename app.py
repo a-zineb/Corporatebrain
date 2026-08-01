@@ -16,6 +16,7 @@ import ollama
 import docx2txt
 import olefile
 import struct
+import unicodedata
 
 import rag_pipeline
 
@@ -86,20 +87,101 @@ def detect_direct_factual_intent(query, has_history=False):
 
 def detect_catalog_intent(query):
     """Recognize explicit requests for the indexed knowledge catalog."""
-    lowered = " ".join(str(query or "").casefold().split())
+    lowered = normalize_catalog_text(query)
     markers = (
         "all resources", "all the resources", "all documents", "indexed documents", "knowledge catalog",
         "catalogue de connaissances", "catalogue", "list all", "show the catalog",
         "tous les documents", "toutes les ressources", "ressources disponibles",
+        "what documents do you have", "what files do you have", "documents do you have",
     )
     return any(marker in lowered for marker in markers)
+
+
+def normalize_catalog_text(value):
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = text.translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'}))
+    text = "".join(
+        character for character in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(character)
+    )
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
+
+
+def parse_catalog_refinements(query):
+    """Parse deterministic file-type, metadata, and filename/topic refinements."""
+    normalized = normalize_catalog_text(query)
+    if re.search(r"(all|tous|toutes|all of them|tout)", normalized):
+        return {"clear": True, "file_types": [], "terms": [], "metadata": {}}
+    file_types = []
+    if re.search(r"(pdf|pdfs)", normalized):
+        file_types.append("pdf")
+    if re.search(r"(doc|docx|word|words)", normalized):
+        file_types.extend(["doc", "docx"])
+    if re.search(r"(xls|xlsx|excel|excels)", normalized):
+        file_types.extend(["xls", "xlsx"])
+    metadata = {}
+    for zone in ("ocm", "oeg", "ojo", "oci"):
+        if re.search(rf"{zone}", normalized):
+            metadata["geographical_entity"] = zone.upper()
+    for application in ("kpsa", "mz"):
+        if re.search(rf"{application}", normalized):
+            metadata["application"] = application.upper()
+    stop = {
+        "only", "the", "a", "an", "all", "of", "them", "files", "file", "documents",
+        "document", "show", "give", "me", "that", "are", "in", "here", "do", "you",
+        "have", "what", "list", "indexed", "knowledge", "catalog", "catalogue",
+        "pdf", "pdfs", "doc", "docx", "word", "words", "xls", "xlsx", "excel", "excels",
+        "ocm", "oeg", "ojo", "oci", "kpsa", "mz",
+    }
+    terms = [term for term in normalized.split() if term not in stop and len(term) > 1]
+    return {
+        "clear": False,
+        "file_types": sorted(set(file_types)),
+        "terms": sorted(set(terms)),
+        "metadata": metadata,
+    }
+
+def parse_catalog_refinements(query):
+    """Parse catalog refinements using normalized token matching."""
+    normalized = normalize_catalog_text(query)
+    tokens = set(normalized.split())
+    if {"all", "of", "them"}.issubset(tokens) or tokens.intersection({"tous", "toutes", "tout"}):
+        return {"clear": True, "file_types": [], "terms": [], "metadata": {}}
+    file_types = []
+    if tokens.intersection({"pdf", "pdfs"}):
+        file_types.append("pdf")
+    if tokens.intersection({"doc", "docx", "word", "words"}):
+        file_types.extend(["doc", "docx"])
+    if tokens.intersection({"xls", "xlsx", "excel", "excels"}):
+        file_types.extend(["xls", "xlsx"])
+    metadata = {}
+    for zone in ("ocm", "oeg", "ojo", "oci"):
+        if zone in tokens:
+            metadata["geographical_entity"] = zone.upper()
+    for application in ("kpsa", "mz"):
+        if application in tokens:
+            metadata["application"] = application.upper()
+    stop = {
+        "only", "the", "a", "an", "all", "of", "them", "files", "file", "documents",
+        "document", "show", "give", "me", "that", "are", "in", "here", "do", "you",
+        "have", "what", "list", "indexed", "knowledge", "catalog", "catalogue",
+        "pdf", "pdfs", "doc", "docx", "word", "words", "xls", "xlsx", "excel", "excels",
+        "ocm", "oeg", "ojo", "oci", "kpsa", "mz",
+    }
+    terms = [term for term in tokens if term not in stop and len(term) > 1]
+    return {
+        "clear": False,
+        "file_types": sorted(set(file_types)),
+        "terms": sorted(set(terms)),
+        "metadata": metadata,
+    }
 
 
 def detect_catalog_continuation(query, previous_actual_mode=None):
     """Keep catalog follow-ups in catalog mode after a catalog response."""
     if previous_actual_mode != "catalog":
         return False
-    lowered = " ".join(str(query or "").casefold().split())
+    lowered = normalize_catalog_text(query)
     if any(marker in lowered for marker in (
         "explain", "expliquer", "why", "pourquoi", "how does", "comment fonctionne",
         "compare", "compar", "summary", "résumé", "resume",
@@ -107,7 +189,8 @@ def detect_catalog_continuation(query, previous_actual_mode=None):
         return False
     continuation_markers = (
         "files", "file", "documents", "document", "all of them", "show them",
-        "those documents", "only the pdfs", "only pdf", "give me the files",
+        "those documents", "only the pdfs", "only the pdf documents", "only pdf",
+        "give me the files",
         "the files that are in here", "fichiers", "documents", "tous", "toutes",
         "ceux-là", "ceux la", "montre-les", "uniquement les pdf",
     )
@@ -177,7 +260,7 @@ def hybrid_search(query, collection, embedding_model, bm25, docs, metadatas, chr
     ).as_legacy_tuple()
 
 
-def list_catalog_documents(collection, chroma_filter=None):
+def list_catalog_documents(collection, chroma_filter=None, refinements=None):
     """Read every in-scope document metadata record without retrieval."""
     records = collection.get(where=chroma_filter, include=["metadatas"]).get("metadatas", [])
     unique = {}
@@ -188,7 +271,38 @@ def list_catalog_documents(collection, chroma_filter=None):
         if not isinstance(filename, str) or not filename:
             continue
         unique.setdefault(metadata.get("file_hash") or filename, metadata)
-    return sorted(unique.values(), key=lambda item: (item.get("application", ""), item.get("geographical_entity", ""), item.get("source_file", "").lower()))
+    rows = list(unique.values())
+    refinements = refinements or {}
+    file_types = set(refinements.get("file_types", ()))
+    terms = tuple(refinements.get("terms", ()))
+    metadata_filters = refinements.get("metadata", {})
+    if metadata_filters:
+        rows = [
+            row for row in rows
+            if all(
+                str(row.get(key, "")).casefold() == str(value).casefold()
+                for key, value in metadata_filters.items()
+            )
+        ]
+    if file_types:
+        rows = [
+            row for row in rows
+            if os.path.splitext(str(row.get("source_file", "")))[1]
+            .lstrip(".").casefold() in file_types
+        ]
+    if terms:
+        rows = [
+            row for row in rows
+            if all(
+                term in normalize_catalog_text(" ".join(str(value) for value in row.values()))
+                for term in terms
+            )
+        ]
+    return sorted(rows, key=lambda item: (
+        item.get("application", ""),
+        item.get("geographical_entity", ""),
+        item.get("source_file", "").lower(),
+    ))
 
 
 # ==========================================
@@ -584,6 +698,32 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         ),
         None,
     )
+    previous_catalog_refinements = next(
+        (
+            message.get("catalog_refinements", {})
+            for message in reversed(st.session_state.messages)
+            if message.get("role") == "assistant" and message.get("actual_mode") == "catalog"
+        ),
+        {},
+    )
+    current_catalog_refinements = parse_catalog_refinements(user_query)
+    if current_catalog_refinements.get("clear"):
+        catalog_refinements = {}
+    else:
+        catalog_refinements = {
+            "file_types": sorted(set(
+                previous_catalog_refinements.get("file_types", [])
+                + current_catalog_refinements.get("file_types", [])
+            )),
+            "terms": sorted(set(
+                previous_catalog_refinements.get("terms", [])
+                + current_catalog_refinements.get("terms", [])
+            )),
+            "metadata": {
+                **previous_catalog_refinements.get("metadata", {}),
+                **current_catalog_refinements.get("metadata", {}),
+            },
+        }
     catalog_route = (
         answer_mode == "Knowledge catalog"
         or (
@@ -595,7 +735,9 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         )
     )
     if catalog_route:
-        catalog_rows = list_catalog_documents(collection, chroma_filter)
+        catalog_rows = list_catalog_documents(
+            collection, chroma_filter, catalog_refinements
+        )
         catalog_lines = [
             f"- {row.get('application', 'Non classée')} / "
             f"{row.get('geographical_entity', 'Non classée')} — "
@@ -626,6 +768,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             "content": catalog_text,
             "actual_mode": "catalog",
             "sources": [],
+            "catalog_refinements": catalog_refinements,
         })
         with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
             audit_f.write(json.dumps({

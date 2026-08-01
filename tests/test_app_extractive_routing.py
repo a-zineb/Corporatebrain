@@ -17,12 +17,15 @@ def _load_helpers():
         "detect_direct_factual_intent",
         "detect_catalog_intent",
         "detect_catalog_continuation",
+        "normalize_catalog_text",
+        "parse_catalog_refinements",
+        "list_catalog_documents",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
         type_ignores=[],
     )
-    namespace = {"os": os, "re": __import__("re")}
+    namespace = {"os": os, "re": __import__("re"), "unicodedata": __import__("unicodedata")}
     exec(compile(module, "app.py", "exec"), namespace)
     return namespace
 
@@ -127,6 +130,50 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
             APP_SOURCE.index("prompt_result = rag_pipeline.build_production_prompt")
         ]
         self.assertIn("st.stop()", direct_region)
+
+    def test_catalog_normalization_and_refinement_filters(self):
+        helpers = _load_helpers()
+        self.assertEqual(
+            helpers["normalize_catalog_text"]("What documents do you have?"),
+            helpers["normalize_catalog_text"]("What documents do you have"),
+        )
+        self.assertEqual(
+            helpers["parse_catalog_refinements"]("Only the PDF documents")["file_types"],
+            ["pdf"],
+        )
+        self.assertEqual(
+            helpers["parse_catalog_refinements"]("Only Word files")["file_types"],
+            ["doc", "docx"],
+        )
+        self.assertEqual(
+            helpers["parse_catalog_refinements"]("Only Excel files")["file_types"],
+            ["xls", "xlsx"],
+        )
+        self.assertEqual(
+            helpers["parse_catalog_refinements"]("Only OCM documents")["metadata"],
+            {"geographical_entity": "OCM"},
+        )
+
+        class FakeCollection:
+            def get(self, **kwargs):
+                return {"metadatas": [
+                    {"file_hash": "1", "source_file": "CRBT.pdf", "application": "KPSA", "geographical_entity": "OCM"},
+                    {"file_hash": "2", "source_file": "GGSN.docx", "application": "MZ", "geographical_entity": "OEG"},
+                    {"file_hash": "3", "source_file": "Huawei.xlsx", "application": "MZ", "geographical_entity": "OJO"},
+                ]}
+
+        listing = helpers["list_catalog_documents"]
+        self.assertEqual(len(listing(FakeCollection(), refinements={"file_types": ["pdf"]})), 1)
+        self.assertEqual(len(listing(FakeCollection(), refinements={"terms": ["crbt"]})), 1)
+        self.assertEqual(len(listing(FakeCollection(), refinements={"metadata": {"geographical_entity": "OCM"}})), 1)
+        self.assertEqual(len(listing(FakeCollection(), refinements={})), 3)
+
+    def test_all_of_them_clears_conversational_refinements(self):
+        helpers = _load_helpers()
+        parsed = helpers["parse_catalog_refinements"]("All of them")
+        self.assertTrue(parsed["clear"])
+        self.assertEqual(parsed["file_types"], [])
+        self.assertEqual(parsed["terms"], [])
 
     def test_catalog_continuation_precedes_extractive_and_avoids_llm_stages(self):
         self.assertIn("detect_catalog_continuation(user_query, previous_actual_mode)", APP_SOURCE)
