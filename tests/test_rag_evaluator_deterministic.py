@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import multiprocessing
 from pathlib import Path
 import tempfile
 import time
@@ -13,6 +14,19 @@ from unittest.mock import patch
 
 import rag_evaluator
 import rag_pipeline
+
+
+def isolated_success(value):
+    """Pickle-safe child operation used to validate evaluator process cleanup."""
+
+    return f"completed:{value}"
+
+
+def isolated_sleep(seconds):
+    """Pickle-safe slow child operation used to validate hard cancellation."""
+
+    time.sleep(seconds)
+    return "too-late"
 
 
 class FakeVector:
@@ -202,6 +216,41 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(result["trace"].failure.code, "generation_timeout")
         self.assertIn("query_rewriting", result["stage_timings_ms"])
 
+    def test_isolated_model_stage_returns_normal_success_and_cleans_up(self):
+        before = {child.pid for child in multiprocessing.active_children()}
+        value, elapsed = rag_evaluator.run_isolated_stage(
+            "generation", isolated_success, "answer", 20.0,
+        )
+        self.assertEqual(value, "completed:answer")
+        self.assertGreaterEqual(elapsed, 0.0)
+        self.assertEqual({child.pid for child in multiprocessing.active_children()}, before)
+
+    def test_isolated_model_stage_terminates_timed_out_child_without_orphan(self):
+        before = {child.pid for child in multiprocessing.active_children()}
+        with self.assertRaisesRegex(rag_evaluator.StageTimeoutError, "generation exceeded 0.01 seconds"):
+            rag_evaluator.run_isolated_stage("generation", isolated_sleep, 1.0, 0.01)
+        self.assertEqual({child.pid for child in multiprocessing.active_children()}, before)
+
+    def test_multiple_isolated_timeouts_remain_sequential_and_leave_no_children(self):
+        before = {child.pid for child in multiprocessing.active_children()}
+        for _ in range(2):
+            with self.assertRaises(rag_evaluator.StageTimeoutError):
+                rag_evaluator.run_isolated_stage("generation", isolated_sleep, 1.0, 0.01)
+            self.assertEqual({child.pid for child in multiprocessing.active_children()}, before)
+
+    def test_local_ollama_generator_uses_the_isolated_model_boundary(self):
+        request = rag_evaluator.LocalModelStageRequest(
+            stage="query_rewriting", model_name="qwen3:8b", question="alpha",
+        )
+        generator = rag_evaluator.EvaluatorGenerationBudget(rag_evaluator.ollama, 256)
+        expected = rag_pipeline.QueryRewriteResult("alpha", 0.0)
+        with patch("rag_evaluator.run_isolated_stage", return_value=(expected, 3.0)) as isolated:
+            result, elapsed = rag_evaluator.run_model_stage(
+                request, generator, lambda: self.fail("local generator must not use the in-process fallback"),
+            )
+        self.assertEqual((result, elapsed), (expected, 3.0))
+        isolated.assert_called_once()
+
     def test_evaluator_generation_budget_caps_only_streaming_output(self):
         generator = FakeGenerator("Answer")
         budget = rag_evaluator.EvaluatorGenerationBudget(generator, 17)
@@ -354,6 +403,9 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             rag_evaluator.GROUNDING_EXPERIMENTS[1],
         )
         self.assertEqual(variant["experiment"], "G1_evidence_first")
+        self.assertEqual(variant["status"], "NOT_RUN")
+        self.assertEqual(variant["trace"].failure.code, "not_run_control_failed")
+        self.assertIsNone(variant["metrics"]["latency_ms"])
         self.assertTrue(variant["grounding_context"]["retrieval_parity"])
 
     def test_reranking_opportunities_identify_ranking_only_misses(self):

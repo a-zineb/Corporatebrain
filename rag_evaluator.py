@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import math
+import multiprocessing
 from pathlib import Path
 import queue
 import threading
@@ -133,6 +134,111 @@ class EvaluatorGenerationBudget:
             options["num_predict"] = self.max_output_tokens
             kwargs["options"] = options
         return self.generator.chat(**kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class LocalModelStageRequest:
+    """Serializable evaluator-only request for one local Ollama model stage."""
+
+    stage: str
+    model_name: str
+    question: str = ""
+    conversation: tuple[rag_pipeline.ChatMessage | rag_pipeline.Metadata, ...] = ()
+    prompt: str = ""
+    clarification_language: str | None = None
+    max_output_tokens: int | None = None
+    timeout_seconds: float = 120.0
+
+
+def _child_process_entry(operation: Callable[[Any], Any], payload: Any, result: Any) -> None:
+    """Return a serializable child-process outcome without leaking exceptions."""
+
+    try:
+        result.put((True, operation(payload)))
+    except BaseException as error:
+        result.put((False, (type(error).__name__, str(error))))
+
+
+def run_isolated_stage(
+    stage: str,
+    operation: Callable[[Any], Any],
+    payload: Any,
+    timeout_seconds: float,
+    *,
+    clock: Callable[[], float] = time.perf_counter,
+) -> tuple[Any, float]:
+    """Run one evaluator-only model operation in a child that can be terminated.
+
+    A timed-out child is terminated and joined before this function returns.  This
+    deliberately prevents queued local-Ollama work from surviving into the next
+    benchmark case.
+    """
+
+    context = multiprocessing.get_context("spawn")
+    result = context.Queue(maxsize=1)
+    process = context.Process(target=_child_process_entry, args=(operation, payload, result))
+    started = clock()
+    process.start()
+    try:
+        process.join(timeout_seconds)
+        if process.is_alive():
+            process.terminate()
+            process.join()
+            raise StageTimeoutError(stage, timeout_seconds)
+        try:
+            succeeded, value = result.get(timeout=1.0)
+        except queue.Empty as error:
+            raise RuntimeError(f"{stage} child exited without returning an outcome") from error
+        if not succeeded:
+            error_type, message = value
+            raise RuntimeError(f"{stage} child failed with {error_type}: {message}")
+        return value, (clock() - started) * 1000
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join()
+        result.close()
+        result.join_thread()
+
+
+def _execute_local_model_stage(request: LocalModelStageRequest) -> rag_pipeline.QueryRewriteResult | rag_pipeline.GenerationResult:
+    """Call certified pipeline model APIs through an evaluator-local Ollama client."""
+
+    client = ollama.Client(host="http://127.0.0.1:11434", timeout=request.timeout_seconds)
+    if request.stage == "query_rewriting":
+        return rag_pipeline.rewrite_query(
+            request.question, request.conversation, request.model_name, client,
+        )
+    if request.stage == "generation":
+        generator: rag_pipeline.TextGenerator = client
+        if request.max_output_tokens is not None:
+            generator = EvaluatorGenerationBudget(client, request.max_output_tokens)
+        return rag_pipeline.stream_generate(
+            request.prompt, request.model_name, generator,
+            clarification_language=request.clarification_language,
+        )
+    raise ValueError(f"Unsupported local model stage: {request.stage}")
+
+
+def uses_local_ollama(generator: rag_pipeline.TextGenerator) -> bool:
+    """Identify the evaluator's real local-Ollama generator without affecting fakes."""
+
+    underlying = generator.generator if isinstance(generator, EvaluatorGenerationBudget) else generator
+    return underlying is ollama or isinstance(underlying, ollama.Client)
+
+
+def run_model_stage(
+    request: LocalModelStageRequest,
+    generator: rag_pipeline.TextGenerator,
+    fallback_operation: Callable[[], Any],
+    *,
+    clock: Callable[[], float] = time.perf_counter,
+) -> tuple[Any, float]:
+    """Use a cancellable process for real local Ollama and in-process fakes for tests."""
+
+    if uses_local_ollama(generator):
+        return run_isolated_stage(request.stage, _execute_local_model_stage, request, request.timeout_seconds, clock=clock)
+    return run_stage(request.stage, fallback_operation, request.timeout_seconds, clock=clock)
 
 
 def run_stage(stage: str, operation: Callable[[], Any], timeout_seconds: float, *, clock: Callable[[], float] = time.perf_counter) -> tuple[Any, float]:
@@ -265,7 +371,18 @@ def evaluate_case(
     experiment = experiment or certified_control(runtime.config)
     stage_timings: dict[str, float] = {}
     try:
-        rewrite, stage_timings["query_rewriting"] = run_stage("query_rewriting", lambda: rag_pipeline.rewrite_query(case["question"], case["conversation"], runtime.config.llm_model_name, generator, clock=clock), stage_timeout_seconds, clock=clock)
+        rewrite_request = LocalModelStageRequest(
+            stage="query_rewriting", model_name=runtime.config.llm_model_name,
+            question=case["question"], conversation=tuple(case["conversation"]),
+            timeout_seconds=stage_timeout_seconds,
+        )
+        rewrite, stage_timings["query_rewriting"] = run_model_stage(
+            rewrite_request, generator,
+            lambda: rag_pipeline.rewrite_query(
+                case["question"], case["conversation"], runtime.config.llm_model_name, generator, clock=clock,
+            ),
+            clock=clock,
+        )
         metadata_filter = rag_pipeline.normalize_chroma_filter(case["metadata_filter"])
         hybrid, stage_timings["vector_retrieval_bm25_rrf"] = run_stage("vector_retrieval_bm25_rrf", lambda: rag_pipeline.hybrid_search(rewrite.query, runtime.collection, runtime.embedding_model, runtime.bm25, runtime.documents, runtime.metadatas, chroma_filter=metadata_filter, top_k=experiment.final_top_k, min_results_before_relax=experiment.fallback_threshold, vector_candidate_count=experiment.vector_candidate_count, bm25_candidate_count=experiment.bm25_candidate_count, fusion_depth=experiment.fusion_depth, rrf_k=experiment.rrf_k), stage_timeout_seconds, clock=clock)
     except StageTimeoutError as error:
@@ -300,7 +417,22 @@ def evaluate_case(
         except StageTimeoutError as error:
             return timeout_result(case, error, started, stage_timings, clock)
         try:
-            generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(prompt.prompt, runtime.config.llm_model_name, generator, clock=clock, clarification_language=language_label(case["language"])), stage_timeout_seconds, clock=clock)
+            generation_request = LocalModelStageRequest(
+                stage="generation", model_name=runtime.config.llm_model_name, prompt=prompt.prompt,
+                clarification_language=language_label(case["language"]),
+                max_output_tokens=(
+                    generator.max_output_tokens if isinstance(generator, EvaluatorGenerationBudget) else None
+                ),
+                timeout_seconds=stage_timeout_seconds,
+            )
+            generation, stage_timings["generation"] = run_model_stage(
+                generation_request, generator,
+                lambda: rag_pipeline.stream_generate(
+                    prompt.prompt, runtime.config.llm_model_name, generator, clock=clock,
+                    clarification_language=language_label(case["language"]),
+                ),
+                clock=clock,
+            )
             citations = rag_pipeline.select_display_sources(generation.response, sources)
         except StageTimeoutError as error:
             return timeout_result(case, error, started, stage_timings, clock)
@@ -498,12 +630,40 @@ def evaluate_grounding_variant(
     if not isinstance(control_trace, rag_pipeline.PipelineTrace):
         raise ValueError("Grounding experiments require an in-memory certified control trace.")
     if control_trace.failure or not control_trace.prompt:
-        skipped = dict(control)
-        skipped["experiment"] = experiment.name
-        skipped["grounding_context"] = {
-            "retained_chunks": [], "dropped_chunks": [], "retrieval_parity": True,
+        failure_code = control_trace.failure.code if control_trace.failure else "control_prompt_unavailable"
+        trace = rag_pipeline.PipelineTrace(
+            query=control_trace.query, rewritten_query=control_trace.rewritten_query,
+            language=control_trace.language, metadata_filter=control_trace.metadata_filter,
+            retrieval=control_trace.retrieval,
+            failure=rag_pipeline.PipelineFailure(
+                code="not_run_control_failed",
+                message=f"{experiment.name} was not run because G0_control failed: {failure_code}",
+            ),
+        )
+        citation = citation_metrics(None, case["acceptable_citations"])
+        metrics = {
+            **{name: None for name in ("recall_at_k", "precision_at_k", "hit_rate_at_k", "mrr", "ndcg_at_k")},
+            **citation,
+            "refusal_correct": None,
+            "clarification_correct": None,
+            "latency_ms": None,
+            "citation_obligation_required": None,
+            "citation_obligation_met": None,
+            "grounded_answer_correct": None,
+            "answer_use": None,
+            "blank_output": None,
+            "unsupported_answer_point_count": 0,
         }
-        return skipped
+        return {
+            "case_id": case["id"], "experiment": experiment.name, "status": "NOT_RUN",
+            "not_run_reason": f"G0_control:{failure_code}", "language": case["language"],
+            "query_type": case["category"],
+            "metadata_filter_state": "filtered" if control_trace.metadata_filter else "unfiltered",
+            "answerability": case["answerability"], "expected_behavior": case["expected_behavior"],
+            "metrics": metrics, "response": "", "trace": trace,
+            "stage_timings_ms": {},
+            "grounding_context": {"retained_chunks": [], "dropped_chunks": [], "retrieval_parity": True},
+        }
     sources, retained, dropped = grounding_context(control_trace.prompt.sources, case["relevance"], experiment)
     started = clock()
     stage_timings: dict[str, float] = {}
@@ -518,10 +678,20 @@ def evaluate_grounding_variant(
         if experiment.prompt_suffix:
             prompt = append_evaluator_prompt_suffix(prompt, experiment.prompt_suffix)
         stage = "generation"
-        generation, stage_timings["generation"] = run_stage("generation", lambda: rag_pipeline.stream_generate(
-            prompt.prompt, runtime.config.llm_model_name, generator, clock=clock,
+        generation_request = LocalModelStageRequest(
+            stage="generation", model_name=runtime.config.llm_model_name, prompt=prompt.prompt,
             clarification_language=language_label(case["language"]),
-        ), stage_timeout_seconds, clock=clock)
+            max_output_tokens=(generator.max_output_tokens if isinstance(generator, EvaluatorGenerationBudget) else None),
+            timeout_seconds=stage_timeout_seconds,
+        )
+        generation, stage_timings["generation"] = run_model_stage(
+            generation_request, generator,
+            lambda: rag_pipeline.stream_generate(
+                prompt.prompt, runtime.config.llm_model_name, generator, clock=clock,
+                clarification_language=language_label(case["language"]),
+            ),
+            clock=clock,
+        )
     except StageTimeoutError as error:
         result = timeout_result(case, error, started, stage_timings, clock)
         result["experiment"] = experiment.name
@@ -618,6 +788,7 @@ def grounding_experiment_report(results: Mapping[str, Sequence[Mapping[str, Any]
         quality["unsupported_answer_point_count"] = sum(
             int(row["metrics"].get("unsupported_answer_point_count") or 0) for row in rows
         )
+        quality["not_run_case_count"] = sum(row.get("status") == "NOT_RUN" for row in rows)
         forensic_counts: dict[str, int] = {}
         for row in serialized:
             category = row.get("forensic_category", "unknown")
@@ -677,6 +848,7 @@ def compare_grounding_stability(
         variants[name] = {
             "complete": all(
                 report["metrics"].get("generation_timeout_count") == 0
+                and report["metrics"].get("not_run_case_count", 0) == 0
                 for report in (first_variants[name], second_variants[name])
             ),
             "retrieval_parity": all(
