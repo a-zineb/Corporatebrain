@@ -105,6 +105,29 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertFalse(continuation("Explain the CRBT workflow", "catalog"))
         self.assertFalse(continuation("files", "generative"))
 
+    def test_selector_architecture_examples(self):
+        helpers = _load_helpers()
+        direct = helpers["detect_direct_factual_intent"]
+        catalog = helpers["detect_catalog_intent"]
+        self.assertTrue(catalog("List all files"))
+        self.assertTrue(helpers["detect_catalog_continuation"]("Only the PDFs", "catalog"))
+        self.assertTrue(direct("Combien d’instances INZsmart sont déployées ?"))
+        self.assertTrue(direct("Où se trouve la cafétéria ?"))
+        self.assertFalse(direct("Explique le workflow CRBT"))
+        self.assertFalse(direct("Compare GGSN et P2P"))
+
+    def test_selector_description_and_architecture_guards(self):
+        self.assertIn("Auto : catalogue", APP_SOURCE)
+        self.assertIn("Direct answer : extraction déterministe", APP_SOURCE)
+        self.assertIn("AI answer : RAG génératif", APP_SOURCE)
+        self.assertIn("Knowledge catalog : liste complète", APP_SOURCE)
+        self.assertIn('answer_mode == "Direct answer"', APP_SOURCE)
+        direct_region = APP_SOURCE[
+            APP_SOURCE.index('answer_mode == "Direct answer"'):
+            APP_SOURCE.index("prompt_result = rag_pipeline.build_production_prompt")
+        ]
+        self.assertIn("st.stop()", direct_region)
+
     def test_catalog_continuation_precedes_extractive_and_avoids_llm_stages(self):
         self.assertIn("detect_catalog_continuation(user_query, previous_actual_mode)", APP_SOURCE)
         self.assertLess(

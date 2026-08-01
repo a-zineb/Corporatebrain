@@ -80,7 +80,7 @@ def detect_direct_factual_intent(query, has_history=False):
         return False
     if re.search(r"\b(it|this|that|these|those|ceci|cela|ca|cette|ce)\b", lowered):
         return False
-    prefix = r"^(what|which|where|who|when|how many|quel|quelle|quels|quelles|qui|quand|combien)\b"
+    prefix = r"^(what|which|where|who|when|how many|quel|quelle|quels|quelles|où|ou|qui|quand|combien)\b"
     return bool(re.match(prefix, lowered)) and len(re.findall(r"\b(?:and|et|or|ou)\b", lowered)) == 0
 
 
@@ -561,6 +561,12 @@ answer_mode = st.selectbox(
     ["Auto", "Direct answer", "AI answer", "Knowledge catalog"],
     key="answer_mode",
 )
+st.caption(
+    "Auto : catalogue → réponse directe → IA. "
+    "Direct answer : extraction déterministe. "
+    "AI answer : RAG génératif. "
+    "Knowledge catalog : liste complète des documents."
+)
 
 if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
 
@@ -651,6 +657,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
     if collection.count() == 0:
         no_docs = " Aucun document n'est indexé dans 'doc_storage_v2'." if current_lang == "French" else "⚠️ No documents indexed in 'doc_storage_v2'."
         with st.chat_message("assistant"):
+            st.caption("Mode : réponse IA")
             st.warning(no_docs)
         st.session_state.messages.append({"role": "user", "content": user_query})
         st.session_state.messages.append({
@@ -686,6 +693,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             # mais on reste dans l'esprit d'ouvrir la discussion plutôt que de la clore.
             no_match_msg = rag_pipeline.build_no_match_message(current_lang)
             with st.chat_message("assistant"):
+                st.caption("Mode : réponse IA")
                 st.markdown(no_match_msg)
             st.session_state.messages.append({"role": "user", "content": user_query})
             st.session_state.messages.append({
@@ -781,8 +789,42 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "content": full_stream_response,
                         "sources": display_sources,
                         "answer_mode": "extractive",
+                        "actual_mode": "extractive",
                     })
                     st.stop()
+
+            if extractive_route and answer_mode == "Direct answer":
+                direct_response = (
+                    extractive_result.answer_text
+                    if extractive_result is not None
+                    else rag_pipeline.build_clarification_message(current_lang)
+                )
+                with st.chat_message("assistant"):
+                    st.caption("Mode : réponse directe")
+                    st.markdown(direct_response)
+                st.session_state.messages.append({"role": "user", "content": user_query})
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": direct_response,
+                    "actual_mode": "extractive",
+                    "sources": [],
+                })
+                with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+                    audit_f.write(json.dumps({
+                        "timestamp": datetime.now().isoformat(),
+                        "question_originale": user_query,
+                        "question_reformulee": standalone_query,
+                        "language": current_lang,
+                        "requested_mode": answer_mode,
+                        "actual_mode": "extractive",
+                        "extractive_status": (
+                            extractive_result.status
+                            if extractive_result is not None
+                            else "NO_EXPLICIT_EVIDENCE"
+                        ),
+                        "sources_count": 0,
+                    }, ensure_ascii=False) + "\n")
+                st.stop()
 
             prompt_result = rag_pipeline.build_production_prompt(
                 user_query=user_query,
@@ -795,6 +837,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             )
             prompt_instructions = prompt_result.prompt
             with st.chat_message("assistant"):
+                st.caption("Mode : réponse IA")
                 response_placeholder = st.empty()
                 full_stream_response = ""
 
