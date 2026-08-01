@@ -27,6 +27,63 @@ def open_local_file(path):
     except Exception as e:
         print(f"Erreur d'ouverture de fichier : {e}")
 
+
+def extractive_answers_enabled():
+    """Return whether the opt-in production extractive route is enabled."""
+    return os.getenv("EXTRACTIVE_FACTUAL_ANSWERS_ENABLED", "").strip().casefold() == "true"
+
+
+def detect_direct_factual_intent(query, has_history=False):
+    """Conservatively route only standalone, single-fact questions."""
+    if has_history:
+        return False
+    text = " ".join(str(query or "").split()).strip()
+    if not text or len(text) > 240:
+        return False
+    lowered = text.casefold()
+    excluded = (
+        "summary", "summarize", "résumé", "resume", "explain", "expliquer",
+        "compare", "compar", "pourquoi", "why", "how", "comment",
+        "recommend", "recommand", "list all", "tous les documents",
+        "catalogue", "catalog", "et ", " and ", " ou ", " or ",
+    )
+    if any(marker in lowered for marker in excluded):
+        return False
+    if re.search(r"\b(it|this|that|these|those|ceci|cela|ca|cette|ce)\b", lowered):
+        return False
+    if "?" not in text and not re.match(
+        r"^(what|which|where|who|when|how many|quel|quelle|quels|quelles|où|qui|quand|combien)",
+        lowered,
+    ):
+        return False
+    factual_prefix = re.match(
+        r"^(what|which|where|who|when|how many|quel|quelle|quels|quelles|où|qui|quand|combien)",
+        lowered,
+    )
+    return bool(factual_prefix) and len(re.findall(r"(?:and|et|or|ou)", lowered)) == 0
+
+# Replace the declarative helper above with a clean ASCII-safe regex version.
+def detect_direct_factual_intent(query, has_history=False):
+    if has_history:
+        return False
+    text = " ".join(str(query or "").split()).strip()
+    if not text or len(text) > 240:
+        return False
+    lowered = text.casefold()
+    excluded = (
+        "summary", "summarize", "resume", "explain", "expliquer",
+        "compare", "compar", "pourquoi", "why", "how", "comment",
+        "recommend", "recommand", "list all", "tous les documents",
+        "catalogue", "catalog", "et ", " and ", " ou ", " or ",
+    )
+    if any(marker in lowered for marker in excluded):
+        return False
+    if re.search(r"\b(it|this|that|these|those|ceci|cela|ca|cette|ce)\b", lowered):
+        return False
+    prefix = r"^(what|which|where|who|when|how many|quel|quelle|quels|quelles|qui|quand|combien)\b"
+    return bool(re.match(prefix, lowered)) and len(re.findall(r"\b(?:and|et|or|ou)\b", lowered)) == 0
+
+
 # ==========================================
 # 1. CONFIGURATION DE LA PAGE
 # ==========================================
@@ -473,8 +530,15 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
     with st.chat_message("user"):
         st.markdown(user_query)
 
-    # 1. Reformulation de la question
-    standalone_query = contextualize_query(user_query, st.session_state.messages, selected_model)
+    # 1. Reformulation de la question (extractive is standalone-only and opt-in).
+    extractive_route = extractive_answers_enabled() and detect_direct_factual_intent(
+        user_query, has_history=bool(st.session_state.messages)
+    )
+    standalone_query = (
+        user_query
+        if extractive_route
+        else contextualize_query(user_query, st.session_state.messages, selected_model)
+    )
 
     if collection.count() == 0:
         no_docs = " Aucun document n'est indexé dans 'doc_storage_v2'." if current_lang == "French" else "⚠️ No documents indexed in 'doc_storage_v2'."
@@ -516,6 +580,96 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             st.session_state.messages.append({"role": "user", "content": user_query})
             st.session_state.messages.append({"role": "assistant", "content": no_match_msg})
         else:
+            if extractive_route:
+                extractive_result = None
+                extractive_evidence = None
+                try:
+                    extractive_trace = rag_pipeline.PipelineTrace(
+                        query=user_query,
+                        rewritten_query=standalone_query,
+                        language=current_lang,
+                        prompt=rag_pipeline.PromptResult(
+                            prompt="",
+                            sources=tuple(all_sources_for_prompt),
+                            context=rag_pipeline.build_context(all_sources_for_prompt),
+                        ),
+                    )
+                    extractive_evidence = rag_pipeline.extract_evidence(extractive_trace)
+                    extractive_result = rag_pipeline.build_extractive_answer(
+                        extractive_evidence, current_lang
+                    )
+                except Exception:
+                    extractive_result = None
+
+                if extractive_result is not None and extractive_result.status == "ANSWER":
+                    display_sources = [
+                        {
+                            "id": source["source_id"],
+                            "file": source["source_file"],
+                            "loc": source["location"],
+                            "text": next(
+                                (
+                                    passage.text
+                                    for passage in extractive_evidence.passages
+                                    if passage.source_id == source["source_id"]
+                                ),
+                                "",
+                            ),
+                            "path": os.path.abspath(
+                                os.path.join(STORAGE_DIR, source["source_file"])
+                            ),
+                            "relaxed": False,
+                        }
+                        for source in extractive_result.sources
+                    ]
+                    full_stream_response = extractive_result.answer_text
+                    with st.chat_message("assistant"):
+                        st.caption("Réponse extraite des passages sources")
+                        st.markdown(full_stream_response)
+                        with st.expander(" Ressources consultées"):
+                            for i_src, src in enumerate(display_sources):
+                                cols = st.columns([3, 1, 1])
+                                with cols[0]:
+                                    st.write(f" **Fichier**: {src['file']}")
+                                with cols[1]:
+                                    st.button(
+                                        " Fichier",
+                                        on_click=open_local_file,
+                                        args=(src.get("path", ""),),
+                                        key=f"extractive_btn_{len(st.session_state.messages)}_{i_src}_f",
+                                    )
+                                with cols[2]:
+                                    st.button(
+                                        " Dossier",
+                                        on_click=open_local_file,
+                                        args=(os.path.dirname(src.get("path", "")),),
+                                        key=f"extractive_btn_{len(st.session_state.messages)}_{i_src}_d",
+                                    )
+                    audit_entry = {
+                        "timestamp": datetime.now().isoformat(),
+                        "question_originale": user_query,
+                        "question_reformulee": standalone_query,
+                        "language": current_lang,
+                        "sources_count": len(display_sources),
+                        "used_relaxed_fallback": was_relaxed,
+                        "answer_mode": "extractive",
+                        "extractive_feature_enabled": True,
+                        "extractive_status": extractive_result.status,
+                        "extractive_evidence_ids": list(extractive_result.evidence_ids),
+                        "extractive_source_ids": list(extractive_result.source_ids),
+                        "extractive_passage_hashes": list(extractive_result.passage_hashes),
+                    }
+                    with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+                        audit_f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+                    st.session_state.messages.append({"role": "user", "content": user_query})
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": full_stream_response,
+                        "sources": display_sources,
+                        "answer_mode": "extractive",
+                    })
+                    st.stop()
+
             prompt_result = rag_pipeline.build_production_prompt(
                 user_query=user_query,
                 filter_ent=filter_ent,
