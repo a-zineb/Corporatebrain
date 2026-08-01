@@ -392,6 +392,48 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual([source.source_id for source in focused], [2])
         self.assertEqual({item["reason"] for item in bounded}, {"outside_focused_bound"})
 
+    def test_compact_context_uses_first_n_sources_and_records_drops(self):
+        sources = tuple(
+            rag_pipeline.PromptSource(index, f"source-{index}.pdf", "Page 1", f"chunk-{index}", f"path-{index}")
+            for index in range(1, 7)
+        )
+        compact = rag_evaluator.COMPACT_CONTEXT_EXPERIMENTS
+        retained5, records5, dropped5 = rag_evaluator.grounding_context(sources, [], compact[1])
+        retained3, records3, dropped3 = rag_evaluator.grounding_context(sources, [], compact[2])
+        self.assertEqual([source.source_id for source in retained5], [1, 2, 3, 4, 5])
+        self.assertEqual([source.source_id for source in retained3], [1, 2, 3])
+        self.assertEqual([item["source_id"] for item in dropped5], [6])
+        self.assertEqual([item["source_id"] for item in dropped3], [4, 5, 6])
+        self.assertEqual({item["reason"] for item in dropped3}, {"outside_top_n_bound"})
+        self.assertEqual([item["source_id"] for item in records5], [1, 2, 3, 4, 5])
+
+    def test_compact_context_runner_checkpoints_and_preserves_trace_parity(self):
+        cases = []
+        for index in range(3):
+            case = case_for(self.content_hash)
+            case["id"] = f"compact-{index}"
+            cases.append(case)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            partial, rows = rag_evaluator.run_grounding_experiments_resumable(
+                cases, self.runtime, FakeGenerator("alpha [SOURCE 1]"), output,
+                experiments=rag_evaluator.COMPACT_CONTEXT_EXPERIMENTS,
+                max_new_variants=3,
+            )
+            self.assertTrue((output / "grounding_checkpoint.pkl").exists())
+            self.assertEqual(sum(len(values) for values in rows.values()), 3)
+            complete, rows = rag_evaluator.run_grounding_experiments_resumable(
+                cases, self.runtime, FakeGenerator("alpha [SOURCE 1]"), output,
+                experiments=rag_evaluator.COMPACT_CONTEXT_EXPERIMENTS, resume=True,
+            )
+            self.assertEqual(sum(len(values) for values in rows.values()), 9)
+            self.assertEqual(complete["variants"]["C5_compact"]["metrics"]["answer_use"], 1.0)
+            self.assertEqual(complete["variants"]["C3_compact"]["metrics"]["answer_use"], 1.0)
+            self.assertTrue(complete["variants"]["C3_compact"]["retrieval_parity"])
+            c3 = next(row for row in rows["C3_compact"] if row["case_id"] == "compact-0")
+            self.assertEqual([item["source_id"] for item in c3["grounding_context"]["retained_chunks"]], [1])
+            self.assertEqual(len(c3["grounding_context"]["dropped_chunks"]), 0)
+
     def test_grounding_experiments_reuse_one_control_retrieval_and_report_parity(self):
         case = case_for(self.content_hash)
         report, rows = rag_evaluator.run_grounding_experiments(

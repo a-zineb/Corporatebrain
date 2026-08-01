@@ -101,6 +101,14 @@ PROMPT_GROUNDING_EXPERIMENTS: tuple[ContextGroundingExperiment, ...] = tuple(
     if experiment.name in {"G0_control", "G4_explicit_facts", "G5_citation_required"}
 )
 
+# Compact-context experiments retain the first N already-ranked sources.  They
+# are evaluator-only views over one certified trace; they never rerun retrieval.
+COMPACT_CONTEXT_EXPERIMENTS: tuple[ContextGroundingExperiment, ...] = (
+    ContextGroundingExperiment("C15_control", "top_n", max_sources=15),
+    ContextGroundingExperiment("C5_compact", "top_n", max_sources=5),
+    ContextGroundingExperiment("C3_compact", "top_n", max_sources=3),
+)
+
 
 def certified_control(config: rag_pipeline.RAGConfig) -> RetrievalExperiment:
     """Represent the approved production configuration without changing it."""
@@ -559,6 +567,9 @@ def grounding_context(
         ))
         retained = ranked[:experiment.max_sources]
         reasons = {source.source_id: "outside_focused_bound" for source in ranked[experiment.max_sources:]}
+    elif experiment.strategy == "top_n":
+        retained = original[:experiment.max_sources]
+        reasons = {source.source_id: "outside_top_n_bound" for source in original[experiment.max_sources:]}
     else:
         raise ValueError(f"Unsupported grounding strategy: {experiment.strategy}")
     retained_ids = {source.source_id for source in retained}
@@ -1040,10 +1051,12 @@ def _grounding_checkpoint_path(output_dir: Path) -> Path:
     return output_dir / "grounding_checkpoint.pkl"
 
 
-def _load_grounding_checkpoint(output_dir: Path) -> dict[str, Any]:
+def _load_grounding_checkpoint(
+    output_dir: Path, experiments: Sequence[ContextGroundingExperiment] = GROUNDING_EXPERIMENTS,
+) -> dict[str, Any]:
     path = _grounding_checkpoint_path(output_dir)
     if not path.exists():
-        return {"rows": {name: [] for name in (experiment.name for experiment in GROUNDING_EXPERIMENTS)}, "completed": {}}
+        return {"rows": {name: [] for name in (experiment.name for experiment in experiments)}, "completed": {}}
     with path.open("rb") as stream:
         state = pickle.load(stream)
     if not isinstance(state, dict) or not isinstance(state.get("rows"), dict):
@@ -1062,7 +1075,7 @@ def _write_grounding_checkpoint(output_dir: Path, state: Mapping[str, Any]) -> N
 def _grounding_partial_reports(
     output_dir: Path, rows: Mapping[str, Sequence[Mapping[str, Any]]], *,
     expected_case_count: int, fingerprint_before: Mapping[str, Any], fingerprint_after: Mapping[str, Any] | None,
-    status: str,
+    status: str, experiments: Sequence[ContextGroundingExperiment] = GROUNDING_EXPERIMENTS,
 ) -> None:
     """Persist case rows and a partial summary after every variant."""
 
@@ -1080,7 +1093,7 @@ def _grounding_partial_reports(
     summary = {
         "status": status,
         "completed_variant_count": completed,
-        "expected_variant_count": expected_case_count * len(PROMPT_GROUNDING_EXPERIMENTS),
+        "expected_variant_count": expected_case_count * len(experiments),
         "timeout_count": timeout_count,
         "error_count": error_count,
         "fingerprint_before": dict(fingerprint_before),
@@ -1100,6 +1113,8 @@ def run_grounding_experiments_resumable(
     cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
     output_dir: Path, *, resume: bool = False, stage_timeout_seconds: float = 120.0,
     max_new_variants: int | None = None,
+    experiments: Sequence[ContextGroundingExperiment] = PROMPT_GROUNDING_EXPERIMENTS,
+    certified_controls: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
     """Run G0/G4/G5 with variant checkpoints.
 
@@ -1110,8 +1125,8 @@ def run_grounding_experiments_resumable(
     """
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    experiments = PROMPT_GROUNDING_EXPERIMENTS
-    state = _load_grounding_checkpoint(output_dir) if resume else {
+    experiments = tuple(experiments)
+    state = _load_grounding_checkpoint(output_dir, experiments) if resume else {
         "rows": {experiment.name: [] for experiment in experiments},
         "completed": {},
     }
@@ -1130,7 +1145,9 @@ def run_grounding_experiments_resumable(
             if key in completed:
                 continue
             if experiment.name == experiments[0].name:
-                control = evaluate_case(case, runtime, generator, stage_timeout_seconds=stage_timeout_seconds)
+                control = dict(certified_controls[case["id"]]) if certified_controls and case["id"] in certified_controls else evaluate_case(
+                    case, runtime, generator, stage_timeout_seconds=stage_timeout_seconds
+                )
                 control_sources = control["trace"].prompt.sources if isinstance(control["trace"], rag_pipeline.PipelineTrace) and control["trace"].prompt else ()
                 retained, retained_records, dropped = grounding_context(control_sources, case["relevance"], experiment)
                 control = dict(control)
@@ -1160,7 +1177,7 @@ def run_grounding_experiments_resumable(
             _write_grounding_checkpoint(output_dir, checkpoint)
             _grounding_partial_reports(
                 output_dir, rows, expected_case_count=len(cases), fingerprint_before=fingerprint_before,
-                fingerprint_after=None, status="PARTIAL",
+                fingerprint_after=None, status="PARTIAL", experiments=experiments,
             )
             if max_new_variants is not None and written >= max_new_variants:
                 return grounding_experiment_report(rows), rows
@@ -1172,7 +1189,7 @@ def run_grounding_experiments_resumable(
     _write_grounding_checkpoint(output_dir, state)
     _grounding_partial_reports(
         output_dir, rows, expected_case_count=len(cases), fingerprint_before=fingerprint_before,
-        fingerprint_after=fingerprint_after, status="COMPLETE",
+        fingerprint_after=fingerprint_after, status="COMPLETE", experiments=experiments,
     )
     return grounding_experiment_report(rows), rows
 
@@ -1180,6 +1197,8 @@ def run_grounding_experiments_resumable(
 def run_grounding_two_passes_resumable(
     cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
     output_dir: Path, *, resume: bool = False, stage_timeout_seconds: float = 120.0,
+    experiments: Sequence[ContextGroundingExperiment] = PROMPT_GROUNDING_EXPERIMENTS,
+    certified_controls: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run two independent resumable G0/G4/G5 passes with live summaries."""
 
@@ -1190,6 +1209,8 @@ def run_grounding_two_passes_resumable(
         report, _rows = run_grounding_experiments_resumable(
             cases, runtime, generator, pass_dir, resume=resume,
             stage_timeout_seconds=stage_timeout_seconds,
+            experiments=experiments,
+            certified_controls=certified_controls,
         )
         partial_path = pass_dir / "partial_summary.json"
         partial = json.loads(partial_path.read_text(encoding="utf-8")) if partial_path.exists() else {}
@@ -1207,6 +1228,20 @@ def run_grounding_two_passes_resumable(
         item["partial_summary"].get("status") == "COMPLETE" for item in passes.values()
     )
     return {"status": "COMPLETE" if complete else "PARTIAL", "passes": passes}
+
+
+def run_compact_context_two_passes_resumable(
+    cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
+    output_dir: Path, *, resume: bool = False, stage_timeout_seconds: float = 120.0,
+    certified_controls: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run the approved C15/C5/C3 context experiment twice with checkpoints."""
+
+    return run_grounding_two_passes_resumable(
+        cases, runtime, generator, output_dir, resume=resume,
+        stage_timeout_seconds=stage_timeout_seconds, experiments=COMPACT_CONTEXT_EXPERIMENTS,
+        certified_controls=certified_controls,
+    )
 
 
 def experiment_summary(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
