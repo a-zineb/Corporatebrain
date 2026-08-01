@@ -445,6 +445,52 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(rows["G4_explicit_facts"][0]["experiment"], "G4_explicit_facts")
         self.assertEqual(report["variants"]["G0_control"]["metrics"]["citation_evaluable_case_count"], 0)
 
+    def test_grounding_runner_checkpoints_variants_and_resumes_two_cases(self):
+        first = case_for(self.content_hash)
+        second = case_for(self.content_hash)
+        second["id"] = "case-2"
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "grounding"
+            partial, partial_rows = rag_evaluator.run_grounding_experiments_resumable(
+                [first, second], self.runtime, FakeGenerator("alpha [SOURCE 1]"), output,
+                max_new_variants=1,
+            )
+            self.assertEqual(len(partial_rows["G0_control"]), 1)
+            self.assertEqual(len(partial_rows["G4_explicit_facts"]), 0)
+            self.assertEqual(json.loads((output / "partial_summary.json").read_text(encoding="utf-8"))["status"], "PARTIAL")
+            self.assertTrue((output / "grounding_checkpoint.pkl").exists())
+            with patch("rag_evaluator.evaluate_case", wraps=rag_evaluator.evaluate_case) as evaluate:
+                complete, rows = rag_evaluator.run_grounding_experiments_resumable(
+                    [first, second], self.runtime, FakeGenerator("alpha [SOURCE 1]"), output,
+                    resume=True,
+                )
+            self.assertEqual(evaluate.call_count, 1)
+            self.assertEqual(evaluate.call_args.args[0]["id"], "case-2")
+            self.assertEqual({len(values) for values in rows.values()}, {2})
+            summary = json.loads((output / "partial_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["status"], "COMPLETE")
+            self.assertEqual(summary["completed_variant_count"], 2 * len(rag_evaluator.PROMPT_GROUNDING_EXPERIMENTS))
+            self.assertTrue(summary["fingerprint_match"])
+            self.assertEqual(summary["fingerprint_before"], summary["fingerprint_after"])
+            self.assertIn("G0_control", complete["variants"])
+
+    def test_grounding_two_pass_summary_is_written_after_each_pass(self):
+        first = case_for(self.content_hash)
+        second = case_for(self.content_hash)
+        second["id"] = "case-2"
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "two-pass"
+            result = rag_evaluator.run_grounding_two_passes_resumable(
+                [first, second], self.runtime, FakeGenerator("alpha [SOURCE 1]"), output,
+            )
+            self.assertEqual(result["status"], "COMPLETE")
+            summary = json.loads((output / "two_pass_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(summary["passes"]), {"run_1", "run_2"})
+            self.assertEqual(summary["passes"]["run_1"]["partial_summary"]["status"], "COMPLETE")
+            self.assertEqual(summary["passes"]["run_2"]["partial_summary"]["status"], "COMPLETE")
+            self.assertTrue(summary["passes"]["run_1"]["partial_summary"]["fingerprint_match"])
+            self.assertTrue(summary["passes"]["run_2"]["partial_summary"]["fingerprint_match"])
+
     def test_unanswerable_no_source_case_accepts_the_approved_clarification_fallback(self):
         case = case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage")
         result = rag_evaluator.evaluate_case(case, self.runtime, FakeGenerator(""))

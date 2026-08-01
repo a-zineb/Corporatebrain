@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import multiprocessing
+import pickle
 from pathlib import Path
 import queue
 import threading
@@ -89,6 +90,13 @@ GROUNDING_EXPERIMENTS: tuple[ContextGroundingExperiment, ...] = (
     ContextGroundingExperiment("G3_focused_context", "focused", max_sources=5),
     ContextGroundingExperiment("G4_explicit_facts", "prompt_suffix", prompt_suffix=G4_EXPLICIT_FACTS_SUFFIX),
     ContextGroundingExperiment("G5_citation_required", "prompt_suffix", prompt_suffix=G5_CITATION_REQUIRED_SUFFIX),
+)
+
+# The approved prompt-grounding benchmark compares only G0/G4/G5.  The prior
+# G1-G3 context experiments remain available to their existing callers.
+PROMPT_GROUNDING_EXPERIMENTS: tuple[ContextGroundingExperiment, ...] = tuple(
+    experiment for experiment in GROUNDING_EXPERIMENTS
+    if experiment.name in {"G0_control", "G4_explicit_facts", "G5_citation_required"}
 )
 
 
@@ -907,6 +915,224 @@ def write_grounding_experiment_report(report: Mapping[str, Any], rows: Mapping[s
     )
 
 
+def grounding_runtime_fingerprint(runtime: EvaluationRuntime) -> dict[str, Any]:
+    """Return the compact read-only corpus/runtime fingerprint for one pass.
+
+    Grounding experiments must use one immutable corpus.  The fingerprint is
+    calculated before and after each pass and persisted with the partial report;
+    it never changes the collection or production runtime.
+    """
+
+    data = runtime.collection.get(include=["documents", "metadatas"])
+    documents = list(data.get("documents") or [])
+    metadatas = list(data.get("metadatas") or [])
+    rows = [
+        {
+            "chunk_id": str(index),
+            "content_sha256": hashlib.sha256(str(document).encode("utf-8")).hexdigest(),
+            "metadata": metadata or {},
+        }
+        for index, (document, metadata) in enumerate(zip(documents, metadatas))
+    ]
+    canonical = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    rows.sort(key=lambda row: row["chunk_id"])
+    corpus_sha256 = hashlib.sha256("\n".join(canonical(row) for row in rows).encode("utf-8")).hexdigest()
+    metadata_sha256 = hashlib.sha256(
+        "\n".join(canonical(row["metadata"]) for row in rows).encode("utf-8")
+    ).hexdigest()
+    return {
+        "corpus_sha256": corpus_sha256,
+        "metadata_sha256": metadata_sha256,
+        "runtime_sha256": hashlib.sha256(canonical({
+            "collection_name": runtime.config.collection_name,
+            "embedding_model_name": runtime.config.embedding_model_name,
+            "llm_model_name": runtime.config.llm_model_name,
+            "vector_candidate_count": runtime.config.vector_candidate_count,
+            "bm25_candidate_count": runtime.config.bm25_candidate_count,
+            "rrf_k": runtime.config.rrf_k,
+            "production_top_k": runtime.config.production_top_k,
+            "min_results_before_relax": runtime.config.min_results_before_relax,
+            "chunk_count": len(rows),
+            "corpus_sha256": corpus_sha256,
+            "metadata_sha256": metadata_sha256,
+        }).encode("utf-8")).hexdigest(),
+        "chunk_count": len(rows),
+    }
+
+
+def _grounding_checkpoint_path(output_dir: Path) -> Path:
+    return output_dir / "grounding_checkpoint.pkl"
+
+
+def _load_grounding_checkpoint(output_dir: Path) -> dict[str, Any]:
+    path = _grounding_checkpoint_path(output_dir)
+    if not path.exists():
+        return {"rows": {name: [] for name in (experiment.name for experiment in GROUNDING_EXPERIMENTS)}, "completed": {}}
+    with path.open("rb") as stream:
+        state = pickle.load(stream)
+    if not isinstance(state, dict) or not isinstance(state.get("rows"), dict):
+        raise ValueError("Invalid grounding checkpoint format")
+    return state
+
+
+def _write_grounding_checkpoint(output_dir: Path, state: Mapping[str, Any]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = _grounding_checkpoint_path(output_dir)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_bytes(pickle.dumps(dict(state), protocol=pickle.HIGHEST_PROTOCOL))
+    temporary.replace(path)
+
+
+def _grounding_partial_reports(
+    output_dir: Path, rows: Mapping[str, Sequence[Mapping[str, Any]]], *,
+    expected_case_count: int, fingerprint_before: Mapping[str, Any], fingerprint_after: Mapping[str, Any] | None,
+    status: str,
+) -> None:
+    """Persist case rows and a partial summary after every variant."""
+
+    report = grounding_experiment_report(rows)
+    write_grounding_experiment_report(report, rows, output_dir)
+    completed = sum(len(values) for values in rows.values())
+    timeout_count = sum(
+        timeout_code(result) is not None
+        for values in rows.values() for result in values
+    )
+    error_count = sum(
+        bool((result_to_json(result).get("trace") or {}).get("failure"))
+        for values in rows.values() for result in values
+    )
+    summary = {
+        "status": status,
+        "completed_variant_count": completed,
+        "expected_variant_count": expected_case_count * len(PROMPT_GROUNDING_EXPERIMENTS),
+        "timeout_count": timeout_count,
+        "error_count": error_count,
+        "fingerprint_before": dict(fingerprint_before),
+        "fingerprint_after": dict(fingerprint_after) if fingerprint_after is not None else None,
+        "fingerprint_match": fingerprint_after is not None and dict(fingerprint_before) == dict(fingerprint_after),
+        "variants": report.get("variants", {}),
+    }
+    (output_dir / "partial_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_dir / "partial_summary.md").write_text(
+        "# Grounding experiment partial summary\n\n" +
+        "\n".join(f"- {key}: {value}" for key, value in summary.items()) + "\n",
+        encoding="utf-8",
+    )
+
+
+def run_grounding_experiments_resumable(
+    cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
+    output_dir: Path, *, resume: bool = False, stage_timeout_seconds: float = 120.0,
+    max_new_variants: int | None = None,
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """Run G0/G4/G5 with variant checkpoints.
+
+    Each variant is persisted immediately.  A resume skips completed
+    ``case_id/variant`` keys, including a partially completed case.  The
+    optional ``max_new_variants`` exists only to exercise interruption/resume
+    behavior in tests; normal callers leave it unset.
+    """
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    experiments = PROMPT_GROUNDING_EXPERIMENTS
+    state = _load_grounding_checkpoint(output_dir) if resume else {
+        "rows": {experiment.name: [] for experiment in experiments},
+        "completed": {},
+    }
+    rows: dict[str, list[dict[str, Any]]] = {
+        experiment.name: list(state.get("rows", {}).get(experiment.name, []))
+        for experiment in experiments
+    }
+    completed = dict(state.get("completed", {}))
+    fingerprint_before = grounding_runtime_fingerprint(runtime)
+    written = 0
+
+    for case in cases:
+        control = next((row for row in rows[experiments[0].name] if row.get("case_id") == case["id"]), None)
+        for experiment in experiments:
+            key = f"{case['id']}::{experiment.name}"
+            if key in completed:
+                continue
+            if experiment.name == experiments[0].name:
+                control = evaluate_case(case, runtime, generator, stage_timeout_seconds=stage_timeout_seconds)
+                control_sources = control["trace"].prompt.sources if isinstance(control["trace"], rag_pipeline.PipelineTrace) and control["trace"].prompt else ()
+                retained, retained_records, dropped = grounding_context(control_sources, case["relevance"], experiment)
+                control = dict(control)
+                control["experiment"] = experiment.name
+                control_citations = citation_metrics(control["trace"].citations, case["acceptable_citations"])
+                control["metrics"] = {
+                    **control["metrics"],
+                    **grounding_quality_metrics(case, control["response"], retained),
+                    **citation_obligation_metrics(case, control_citations),
+                }
+                control["grounding_context"] = {"retained_chunks": retained_records, "dropped_chunks": dropped, "retrieval_parity": True}
+                result = control
+            else:
+                if control is None:
+                    raise ValueError(f"Cannot resume {key}: missing persisted control result")
+                result = evaluate_grounding_variant(case, control, runtime, generator, experiment, stage_timeout_seconds=stage_timeout_seconds)
+            rows[experiment.name] = [row for row in rows[experiment.name] if row.get("case_id") != case["id"]]
+            rows[experiment.name].append(result)
+            completed[key] = {"case_id": case["id"], "experiment": experiment.name}
+            written += 1
+            checkpoint = {
+                "schema_version": 1,
+                "rows": rows,
+                "completed": completed,
+                "fingerprint_before": fingerprint_before,
+            }
+            _write_grounding_checkpoint(output_dir, checkpoint)
+            _grounding_partial_reports(
+                output_dir, rows, expected_case_count=len(cases), fingerprint_before=fingerprint_before,
+                fingerprint_after=None, status="PARTIAL",
+            )
+            if max_new_variants is not None and written >= max_new_variants:
+                return grounding_experiment_report(rows), rows
+
+    fingerprint_after = grounding_runtime_fingerprint(runtime)
+    if fingerprint_before != fingerprint_after:
+        raise RuntimeError("Grounding pass fingerprint changed during evaluation")
+    state = {"schema_version": 1, "rows": rows, "completed": completed, "fingerprint_before": fingerprint_before, "fingerprint_after": fingerprint_after}
+    _write_grounding_checkpoint(output_dir, state)
+    _grounding_partial_reports(
+        output_dir, rows, expected_case_count=len(cases), fingerprint_before=fingerprint_before,
+        fingerprint_after=fingerprint_after, status="COMPLETE",
+    )
+    return grounding_experiment_report(rows), rows
+
+
+def run_grounding_two_passes_resumable(
+    cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime, generator: rag_pipeline.TextGenerator,
+    output_dir: Path, *, resume: bool = False, stage_timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Run two independent resumable G0/G4/G5 passes with live summaries."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    passes: dict[str, Any] = {}
+    for number in (1, 2):
+        pass_dir = output_dir / f"run_{number}"
+        report, _rows = run_grounding_experiments_resumable(
+            cases, runtime, generator, pass_dir, resume=resume,
+            stage_timeout_seconds=stage_timeout_seconds,
+        )
+        partial_path = pass_dir / "partial_summary.json"
+        partial = json.loads(partial_path.read_text(encoding="utf-8")) if partial_path.exists() else {}
+        passes[f"run_{number}"] = {"report": report, "partial_summary": partial}
+        (output_dir / "two_pass_summary.json").write_text(
+            json.dumps({
+                "status": "COMPLETE" if number == 2 and partial.get("status") == "COMPLETE" else "PARTIAL",
+                "passes": passes,
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if partial.get("status") != "COMPLETE":
+            break
+    complete = len(passes) == 2 and all(
+        item["partial_summary"].get("status") == "COMPLETE" for item in passes.values()
+    )
+    return {"status": "COMPLETE" if complete else "PARTIAL", "passes": passes}
+
+
 def experiment_summary(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Report comparable metrics and forensic counts without promoting a winner."""
 
@@ -1321,6 +1547,7 @@ def main() -> None:
     parser.add_argument("--max-generation-tokens", type=int, default=256)
     parser.add_argument("--experiment-matrix", action="store_true", help="Run fixed evaluator-only retrieval variants.")
     parser.add_argument("--context-grounding-experiments", action="store_true", help="Run evaluator-only G0-G3 context experiments.")
+    parser.add_argument("--grounding-two-pass", action="store_true", help="Run two resumable G0/G4/G5 passes.")
     args = parser.parse_args()
     config = rag_pipeline.RAGConfig()
     runtime = load_runtime(config, stage_timeout_seconds=args.stage_timeout_seconds)
@@ -1331,10 +1558,18 @@ def main() -> None:
     benchmark_cases = load_cases(args.benchmark)
     active_cases = benchmark_cases[:args.limit_cases] if args.limit_cases else benchmark_cases
     if args.context_grounding_experiments:
-        report, grounding_rows = run_grounding_experiments(
-            active_cases, runtime, evaluator_generator, stage_timeout_seconds=args.stage_timeout_seconds,
-        )
-        write_grounding_experiment_report(report, grounding_rows, output_dir)
+        if args.grounding_two_pass:
+            two_pass = run_grounding_two_passes_resumable(
+                active_cases, runtime, evaluator_generator, output_dir, resume=args.resume,
+                stage_timeout_seconds=args.stage_timeout_seconds,
+            )
+            report = two_pass["passes"].get("run_2", two_pass["passes"]["run_1"])["report"]
+            grounding_rows = _load_grounding_checkpoint(output_dir / ("run_2" if "run_2" in two_pass["passes"] else "run_1"))["rows"]
+        else:
+            report, grounding_rows = run_grounding_experiments_resumable(
+                active_cases, runtime, evaluator_generator, output_dir, resume=args.resume,
+                stage_timeout_seconds=args.stage_timeout_seconds,
+            )
         results = grounding_rows["G0_control"]
     else:
         results = run_cases(
