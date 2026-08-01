@@ -12,9 +12,11 @@ import multiprocessing
 import pickle
 from pathlib import Path
 import queue
+import re
 import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
+import unicodedata
 
 import chromadb
 import ollama
@@ -567,27 +569,101 @@ def grounding_context(
     return retained, [source_record(source) for source in retained], dropped
 
 
+_MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð", "�")
+_APOSTROPHE_VARIANTS = "'`´‘’‛ʼ＇"
+
+
+def normalize_evaluation_text(value: object) -> str:
+    """Return a conservative, comparison-only canonical form of evaluation text.
+
+    The benchmark is never rewritten.  This representation repairs common UTF-8
+    decoded-as-Latin-1 artifacts, then removes presentation-only differences:
+    accents, apostrophe glyphs, case, punctuation, and repeated whitespace.
+    """
+
+    # Repair mojibake before Unicode compatibility normalization; NFKC can
+    # collapse the intermediate Latin-1 markers needed for byte recovery.
+    text = str(value or "")
+    for _ in range(3):
+        if not any(marker in text for marker in _MOJIBAKE_MARKERS):
+            break
+        try:
+            repaired = text.encode("latin-1").decode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            break
+        if repaired == text:
+            break
+        text = repaired
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(str.maketrans({character: " " for character in _APOSTROPHE_VARIANTS}))
+    text = "".join(
+        character for character in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(character)
+    )
+    return re.sub(r"\s+", " ", re.sub(r"[^\w]+", " ", text.casefold())).strip()
+
+
+def source_faithful_answer_variants(
+    case: Mapping[str, Any], sources: Sequence[rag_pipeline.PromptSource],
+) -> tuple[str, ...]:
+    """Expose only benchmark reference answers explicitly present in support chunks.
+
+    This does not alter benchmark facts or invent paraphrases.  It permits a
+    source-faithful reference answer to satisfy a case whose short answer point
+    uses a different, but equivalent, grammatical form.
+    """
+
+    expected_answer = str(case.get("expected_answer") or "").strip()
+    if not expected_answer:
+        return ()
+    expected_hashes = {
+        item["content_sha256"] for item in case.get("relevance", []) if item.get("label", 0) > 0
+    }
+    supporting_text = "\n".join(
+        source.text for source in sources if source_hash(source) in expected_hashes
+    )
+    normalized_answer = normalize_evaluation_text(expected_answer)
+    if normalized_answer and normalized_answer in normalize_evaluation_text(supporting_text):
+        return (expected_answer,)
+    return ()
+
+
 def grounding_quality_metrics(
     case: Mapping[str, Any], response: str, sources: Sequence[rag_pipeline.PromptSource],
-) -> dict[str, bool | None]:
-    """Measure exact benchmark answer-point use with explicit prompt support."""
+) -> dict[str, bool | int | None]:
+    """Measure literal and canonical answer-point use with explicit prompt support."""
 
     if case["answerability"] != "answerable":
         return {
             "grounded_answer_correct": None, "answer_use": None,
+            "grounded_answer_correct_exact": None, "grounded_answer_correct_normalized": None,
+            "answer_use_exact": None, "answer_use_normalized": None,
             "blank_output": not response.strip(), "unsupported_answer_point_count": 0,
         }
-    normalized = response.casefold()
-    answer_points = [str(point).casefold() for point in case.get("acceptable_answer_points", [])]
-    answer_used = bool(answer_points) and all(point in normalized for point in answer_points)
+    literal_response = response.casefold()
+    literal_points = [str(point).casefold() for point in case.get("acceptable_answer_points", [])]
+    normalized_response = normalize_evaluation_text(response)
+    normalized_points = [normalize_evaluation_text(point) for point in case.get("acceptable_answer_points", [])]
+    source_variants = source_faithful_answer_variants(case, sources)
+    normalized_variants = [normalize_evaluation_text(variant) for variant in source_variants]
+    exact_match = bool(literal_points) and all(point in literal_response for point in literal_points)
+    normalized_points_match = bool(normalized_points) and all(
+        point in normalized_response for point in normalized_points
+    )
+    source_variant_match = any(variant in normalized_response for variant in normalized_variants)
+    normalized_match = normalized_points_match or source_variant_match
     expected_hashes = {item["content_sha256"] for item in case["relevance"] if item["label"] > 0}
     context_hashes = {source_hash(source) for source in sources}
     unsupported_answer_points = sum(
-        point in normalized and not expected_hashes <= context_hashes for point in answer_points
+        point in normalized_response and not expected_hashes <= context_hashes for point in normalized_points
     )
     return {
-        "grounded_answer_correct": answer_used and expected_hashes <= context_hashes,
-        "answer_use": answer_used,
+        "grounded_answer_correct": normalized_match and expected_hashes <= context_hashes,
+        "answer_use": normalized_match,
+        "grounded_answer_correct_exact": exact_match and expected_hashes <= context_hashes,
+        "grounded_answer_correct_normalized": normalized_match and expected_hashes <= context_hashes,
+        "answer_use_exact": exact_match,
+        "answer_use_normalized": normalized_match,
         "blank_output": not response.strip(),
         "unsupported_answer_point_count": unsupported_answer_points,
     }

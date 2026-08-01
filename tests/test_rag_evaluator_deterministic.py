@@ -127,6 +127,54 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertIsNone(metrics["citation_valid"])
         self.assertIsNone(metrics["expected_source_match"])
 
+    def test_normalized_matching_repairs_case_0001_mojibake_and_uses_source_faithful_answer(self):
+        source_text = (
+            "Politique VPN Les employ\u00e9s demandant un acc\u00e8s VPN doivent obtenir "
+            "l'approbation de leur manager avant de contacter le d\u00e9partement IT."
+        )
+        source = rag_pipeline.PromptSource(1, "testcorporatebrain.pdf", "Page 1", source_text, "test.pdf")
+        expected_answer = (
+            "Les employ\u00e9s demandant un acc\u00e8s VPN doivent obtenir l'approbation "
+            "de leur manager avant de contacter le d\u00e9partement IT."
+        )
+        case = {
+            "answerability": "answerable",
+            "expected_answer": expected_answer.encode("utf-8").decode("latin-1").encode("utf-8").decode("latin-1"),
+            "acceptable_answer_points": ["approbation du manager"],
+            "relevance": [{"content_sha256": rag_evaluator.source_hash(source), "label": 2}],
+        }
+        response = (
+            "Les employ\u00e9s demandant un acc\u00e8s VPN doivent obtenir l\u2019approbation de leur manager "
+            "avant de contacter le d\u00e9partement IT."
+        )
+        metrics = rag_evaluator.grounding_quality_metrics(case, response, (source,))
+        self.assertFalse(metrics["answer_use_exact"])
+        self.assertTrue(metrics["answer_use_normalized"])
+        self.assertTrue(metrics["grounded_answer_correct_normalized"])
+        self.assertEqual(
+            rag_evaluator.normalize_evaluation_text("approbation d\u00e9j\u00e0".encode("utf-8").decode("latin-1")),
+            rag_evaluator.normalize_evaluation_text("approbation d\u00e9j\u00e0"),
+        )
+
+    def test_normalized_matching_tolerates_case_0008_accents_apostrophes_and_whitespace(self):
+        source_text = "La caf\u00e9t\u00e9ria principale est situ\u00e9e au 4\u00e8me \u00e9tage. Elle est ouverte de 12h00 \u00e0 14h30."
+        source = rag_pipeline.PromptSource(1, "logistique.pdf", "Page 1", source_text, "logistique.pdf")
+        expected_answer = "La caf\u00e9t\u00e9ria principale est situ\u00e9e au 4\u00e8me \u00e9tage et ouverte de 12h00 \u00e0 14h30."
+        case = {
+            "answerability": "answerable",
+            "expected_answer": expected_answer.encode("utf-8").decode("latin-1").encode("utf-8").decode("latin-1"),
+            "acceptable_answer_points": [
+                "4\u00e8me \u00e9tage".encode("utf-8").decode("latin-1").encode("utf-8").decode("latin-1"),
+                "12h00 \u00e0 14h30".encode("utf-8").decode("latin-1").encode("utf-8").decode("latin-1"),
+            ],
+            "relevance": [{"content_sha256": rag_evaluator.source_hash(source), "label": 2}],
+        }
+        response = "La cafeteria est au 4eme etage ; elle ouvre de 12h00   a 14h30."
+        metrics = rag_evaluator.grounding_quality_metrics(case, response, (source,))
+        self.assertFalse(metrics["answer_use_exact"])
+        self.assertTrue(metrics["answer_use_normalized"])
+        self.assertTrue(metrics["grounded_answer_correct"])
+
     def test_refusal_and_report_serialization_are_deterministic(self):
         result = rag_evaluator.evaluate_case(
             case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage"),
