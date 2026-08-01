@@ -669,17 +669,17 @@ for msg in st.session_state.messages:
                         st.button(" Dossier", on_click=open_local_file, args=(folder_path,), key=f"hist_btn_{st.session_state.messages.index(msg)}_{i_src}_d")
 
 if "answer_mode" not in st.session_state:
-    st.session_state.answer_mode = "Auto"
+    st.session_state.answer_mode = "AI answer"
 answer_mode = st.selectbox(
     "Mode de réponse",
-    ["Auto", "Direct answer", "AI answer", "Knowledge catalog"],
+    ["Knowledge catalog", "Direct answer", "AI answer"],
     key="answer_mode",
 )
 st.caption(
-    "Auto : catalogue → réponse directe → IA. "
+    "Knowledge catalog : liste complète des documents. "
     "Direct answer : extraction déterministe. "
     "AI answer : RAG génératif. "
-    "Knowledge catalog : liste complète des documents."
+    "Le mode reste actif jusqu'à votre prochaine sélection."
 )
 
 if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
@@ -726,13 +726,6 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         }
     catalog_route = (
         answer_mode == "Knowledge catalog"
-        or (
-            answer_mode == "Auto"
-            and (
-                detect_catalog_intent(user_query)
-                or detect_catalog_continuation(user_query, previous_actual_mode)
-            )
-        )
     )
     if catalog_route:
         catalog_rows = list_catalog_documents(
@@ -784,12 +777,6 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
     # 1. Reformulation de la question (extractive is standalone-only and opt-in).
     extractive_route = (
         answer_mode == "Direct answer"
-        or (
-            answer_mode == "Auto"
-            and detect_direct_factual_intent(
-                user_query, has_history=bool(st.session_state.messages)
-            )
-        )
     )
     standalone_query = (
         user_query

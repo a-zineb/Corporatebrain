@@ -81,12 +81,24 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertFalse(catalog("Combien d'instances INZsmart sont déployées ?"))
 
     def test_mode_control_and_actual_mode_are_persisted(self):
-        self.assertIn('st.session_state.answer_mode = "Auto"', APP_SOURCE)
-        self.assertIn('["Auto", "Direct answer", "AI answer", "Knowledge catalog"]', APP_SOURCE)
+        self.assertIn('st.session_state.answer_mode = "AI answer"', APP_SOURCE)
+        self.assertIn('["Knowledge catalog", "Direct answer", "AI answer"]', APP_SOURCE)
         self.assertIn('"actual_mode": "catalog"', APP_SOURCE)
         self.assertIn('"actual_mode": "extractive"', APP_SOURCE)
         self.assertIn('"actual_mode": "generative"', APP_SOURCE)
         self.assertIn("msg.get('actual_mode'", APP_SOURCE)
+
+    def test_manual_modes_are_stable_and_auto_is_not_selectable(self):
+        self.assertNotIn('["Auto", "Direct answer"', APP_SOURCE)
+        self.assertIn('answer_mode == "Knowledge catalog"', APP_SOURCE)
+        self.assertIn('answer_mode == "Direct answer"', APP_SOURCE)
+        self.assertIn('answer_mode = st.selectbox', APP_SOURCE)
+        self.assertNotIn("detect_catalog_intent(user_query)", APP_SOURCE[
+            APP_SOURCE.index("catalog_route ="):APP_SOURCE.index("if catalog_route:")
+        ])
+        self.assertNotIn("detect_direct_factual_intent(", APP_SOURCE[
+            APP_SOURCE.index("extractive_route ="):APP_SOURCE.index("standalone_query =")
+        ])
 
     def test_catalog_and_direct_routes_stop_before_generation(self):
         self.assertIn("if catalog_route:", APP_SOURCE)
@@ -120,7 +132,7 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertFalse(direct("Compare GGSN et P2P"))
 
     def test_selector_description_and_architecture_guards(self):
-        self.assertIn("Auto : catalogue", APP_SOURCE)
+        self.assertIn("Knowledge catalog : liste complète", APP_SOURCE)
         self.assertIn("Direct answer : extraction déterministe", APP_SOURCE)
         self.assertIn("AI answer : RAG génératif", APP_SOURCE)
         self.assertIn("Knowledge catalog : liste complète", APP_SOURCE)
@@ -176,7 +188,7 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertEqual(parsed["terms"], [])
 
     def test_catalog_continuation_precedes_extractive_and_avoids_llm_stages(self):
-        self.assertIn("detect_catalog_continuation(user_query, previous_actual_mode)", APP_SOURCE)
+        self.assertNotIn("detect_catalog_continuation(user_query, previous_actual_mode)", APP_SOURCE)
         self.assertLess(
             APP_SOURCE.index("catalog_route ="),
             APP_SOURCE.index("extractive_route ="),
