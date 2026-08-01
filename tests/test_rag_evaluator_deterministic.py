@@ -175,6 +175,56 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertTrue(metrics["answer_use_normalized"])
         self.assertTrue(metrics["grounded_answer_correct"])
 
+    def test_deterministic_evidence_extraction_finds_the_three_representative_support_passages(self):
+        representatives = (
+            (
+                "cb-v1-0001", "Quelle approbation faut-il obtenir avant un accès VPN ?", 1,
+                "La Politique VPN exige l'approbation de leur manager avant de contacter le département IT.",
+                "vpn",
+            ),
+            (
+                "cb-v1-0008", "Où se situe la cafétéria principale et quelles sont ses heures d'ouverture ?", 3,
+                "La cafétéria principale est située au 4ème étage. Elle est ouverte de 12h00 à 14h30.",
+                "cafeteria",
+            ),
+            (
+                "cb-v1-0011", "Combien d'instances sont prévues pour le flux INZsmart ?", 2,
+                "Pour le flux INZsmart, nous avons prévu 12 instances du même flux.",
+                "inzsmart",
+            ),
+        )
+        for case_id, query, expected_source_id, expected_text, expected_term in representatives:
+            sources = tuple(
+                rag_pipeline.PromptSource(
+                    source_id, f"source-{source_id}.pdf", "Page 1",
+                    expected_text if source_id == expected_source_id else "Un passage sans rapport.",
+                    f"path-{source_id}",
+                )
+                for source_id in (1, 2, 3, 4)
+            )
+            prompt = rag_pipeline.PromptResult("prompt", sources=sources, context="context")
+            trace = rag_pipeline.PipelineTrace(query=query, rewritten_query=query, language="French", prompt=prompt)
+            before = trace.retrieval
+            first = rag_evaluator.extract_evidence(trace)
+            second = rag_evaluator.extract_evidence(trace)
+            self.assertEqual(first.status, "EVIDENCE_FOUND", case_id)
+            self.assertTrue(first.explicit_evidence, case_id)
+            self.assertEqual(first.supporting_source_ids, (expected_source_id,), case_id)
+            self.assertIn(expected_text.casefold().split(".")[0][:18], first.passages[0].text.casefold(), case_id)
+            self.assertIn(expected_term, " ".join(first.passages[0].matched_terms).casefold(), case_id)
+            self.assertEqual(first.to_json(), second.to_json(), case_id)
+            self.assertIs(trace.retrieval, before, case_id)
+
+    def test_evidence_extraction_returns_structured_no_explicit_evidence(self):
+        source = rag_pipeline.PromptSource(1, "source.pdf", "Page 1", "A policy about badges.", "source.pdf")
+        prompt = rag_pipeline.PromptResult("prompt", sources=(source,), context=source.text)
+        trace = rag_pipeline.PipelineTrace(query="What is the social security number?", prompt=prompt)
+        result = rag_evaluator.extract_evidence(trace)
+        self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
+        self.assertFalse(result.explicit_evidence)
+        self.assertEqual(result.failure_reason, "no_query_supported_passage")
+        self.assertEqual(result.to_json()["schema_version"], "1.0")
+
     def test_refusal_and_report_serialization_are_deterministic(self):
         result = rag_evaluator.evaluate_case(
             case_for(self.content_hash, answerability="unanswerable", response_mode="refuse_no_coverage"),

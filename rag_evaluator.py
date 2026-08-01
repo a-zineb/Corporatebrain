@@ -68,6 +68,59 @@ class ContextGroundingExperiment:
     prompt_suffix: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class EvidencePassage:
+    """One verbatim passage selected from an existing prompt source."""
+
+    evidence_id: str
+    source_id: int
+    content_sha256: str
+    source_file: str
+    location: str
+    text: str
+    sentence_index: int
+    match_score: float
+    matched_terms: tuple[str, ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "evidence_id": self.evidence_id,
+            "source_id": self.source_id,
+            "content_sha256": self.content_sha256,
+            "source_file": self.source_file,
+            "location": self.location,
+            "text": self.text,
+            "sentence_index": self.sentence_index,
+            "match_score": self.match_score,
+            "matched_terms": list(self.matched_terms),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceExtractionResult:
+    """Stable, evaluator-only evidence extraction output."""
+
+    status: str
+    query: str
+    language: str | None
+    passages: tuple[EvidencePassage, ...]
+    supporting_source_ids: tuple[int, ...]
+    explicit_evidence: bool
+    failure_reason: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "status": self.status,
+            "query": self.query,
+            "language": self.language,
+            "passages": [passage.to_json() for passage in self.passages],
+            "supporting_source_ids": list(self.supporting_source_ids),
+            "explicit_evidence": self.explicit_evidence,
+            "failure_reason": self.failure_reason,
+        }
+
+
 G4_EXPLICIT_FACTS_SUFFIX = """[EVALUATOR-ONLY GROUNDING RULES]
 Answer only with facts explicitly stated in the supplied SOURCE sections.
 Do not use outside knowledge, assumptions, or facts from a source that is not supplied.
@@ -612,6 +665,82 @@ def normalize_evaluation_text(value: object) -> str:
         if not unicodedata.combining(character)
     )
     return re.sub(r"\s+", " ", re.sub(r"[^\w]+", " ", text.casefold())).strip()
+
+
+_EVIDENCE_STOPWORDS = {
+    "the", "and", "for", "what", "where", "which", "how", "many", "are", "is", "to",
+    "les", "des", "une", "quel", "quelle", "quels", "quelles", "combien", "ou", "est", "sont",
+}
+
+
+def _split_evidence_sentences(text: str) -> tuple[str, ...]:
+    """Split text without changing any retained passage characters."""
+
+    pieces = re.split(r"(?<=[.!?。！？])\s+|\n+", text)
+    return tuple(piece.strip() for piece in pieces if piece.strip())
+
+
+def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str, ...]]:
+    normalized_query = normalize_evaluation_text(query)
+    normalized_passage = normalize_evaluation_text(passage)
+    query_terms = {
+        term for term in normalized_query.split()
+        if len(term) > 2 and term not in _EVIDENCE_STOPWORDS
+    }
+    passage_terms = set(normalized_passage.split())
+    matched = set(query_terms & passage_terms)
+    exact_values = set(re.findall(r"\b\d+(?:[.,:]\d+)?\b", query))
+    passage_values = set(re.findall(r"\b\d+(?:[.,:]\d+)?\b", passage))
+    matched_values = exact_values & passage_values
+    matched.update(matched_values)
+    query_acronyms = set(re.findall(r"\b[A-Z][A-Za-z0-9]{1,}\b", query))
+    passage_acronyms = set(re.findall(r"\b[A-Z][A-Za-z0-9]{1,}\b", passage))
+    matched_acronyms = query_acronyms & passage_acronyms
+    matched.update(matched_acronyms)
+    denominator = max(1, len(query_terms) + len(exact_values) + len(query_acronyms))
+    score = (len(matched) + len(matched_values) + len(matched_acronyms)) / denominator
+    return score, tuple(sorted(matched, key=lambda value: (value.casefold(), value)))
+
+
+def extract_evidence(
+    trace: rag_pipeline.PipelineTrace, *, max_passages: int = 3,
+) -> EvidenceExtractionResult:
+    """Extract explicit passages from a certified trace without benchmark leakage."""
+
+    query = trace.rewritten_query or trace.query
+    prompt = trace.prompt
+    if prompt is None or not prompt.sources:
+        return EvidenceExtractionResult(
+            "NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "no_prompt_sources",
+        )
+    candidates: list[tuple[float, int, int, rag_pipeline.PromptSource, str, tuple[str, ...]]] = []
+    seen: set[tuple[str, str]] = set()
+    for source in prompt.sources:
+        for sentence_index, passage in enumerate(_split_evidence_sentences(source.text)):
+            key = (source_hash(source), normalize_evaluation_text(passage))
+            if key in seen:
+                continue
+            seen.add(key)
+            score, matched_terms = _evidence_match_features(query, passage)
+            if score <= 0 or not matched_terms:
+                continue
+            candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2], normalize_evaluation_text(item[4])))
+    selected = candidates[:max(1, max_passages)]
+    passages = tuple(
+        EvidencePassage(
+            evidence_id=f"E{index}", source_id=source.source_id, content_sha256=source_hash(source),
+            source_file=source.file_name, location=source.location, text=passage,
+            sentence_index=sentence_index, match_score=round(score, 8), matched_terms=matched_terms,
+        )
+        for index, (score, _source_id, sentence_index, source, passage, matched_terms) in enumerate(selected, 1)
+    )
+    source_ids = tuple(sorted({passage.source_id for passage in passages}))
+    if not passages:
+        return EvidenceExtractionResult(
+            "NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "no_query_supported_passage",
+        )
+    return EvidenceExtractionResult("EVIDENCE_FOUND", query, trace.language, passages, source_ids, True)
 
 
 def source_faithful_answer_variants(
