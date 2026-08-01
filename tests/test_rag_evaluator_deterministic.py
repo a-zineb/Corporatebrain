@@ -210,10 +210,37 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             self.assertEqual(first.status, "EVIDENCE_FOUND", case_id)
             self.assertTrue(first.explicit_evidence, case_id)
             self.assertEqual(first.supporting_source_ids, (expected_source_id,), case_id)
-            self.assertIn(expected_text.casefold().split(".")[0][:18], first.passages[0].text.casefold(), case_id)
-            self.assertIn(expected_term, " ".join(first.passages[0].matched_terms).casefold(), case_id)
+            self.assertIn(expected_text.casefold().split(".")[0][:18], " ".join(passage.text for passage in first.passages).casefold(), case_id)
+            self.assertIn(expected_term, " ".join(term for passage in first.passages for term in passage.matched_terms).casefold(), case_id)
             self.assertEqual(first.to_json(), second.to_json(), case_id)
             self.assertIs(trace.retrieval, before, case_id)
+
+    def test_multi_fact_extraction_keeps_location_and_exact_opening_hours(self):
+        sources = (
+            rag_pipeline.PromptSource(
+                3, "local.pdf", "Page 1",
+                "La cafétéria principale est située au 4ème étage. Elle est ouverte de 12h00 à 14h30.",
+                "local.pdf",
+            ),
+            rag_pipeline.PromptSource(
+                4, "noise.pdf", "Page 2",
+                "En cas de perte, le badge temporaire est valable 24 heures.", "noise.pdf",
+            ),
+        )
+        prompt = rag_pipeline.PromptResult("prompt", sources=sources, context="context")
+        trace = rag_pipeline.PipelineTrace(
+            query="Où se situe la cafétéria principale et quelles sont ses heures d'ouverture ?",
+            rewritten_query="Où se situe la cafétéria principale et quelles sont ses heures d'ouverture ?",
+            language="French", prompt=prompt,
+        )
+        result = rag_evaluator.extract_evidence(trace)
+        texts = [passage.text for passage in result.passages]
+        self.assertEqual(result.status, "EVIDENCE_FOUND")
+        self.assertIn("cafétéria principale est située au 4ème étage", " ".join(texts))
+        self.assertIn("12h00 à 14h30", " ".join(texts))
+        self.assertNotIn("badge temporaire", " ".join(texts))
+        self.assertEqual(result.supporting_source_ids, (3,))
+        self.assertTrue(any("time:12h00" in passage.matched_terms for passage in result.passages))
 
     def test_evidence_extraction_returns_structured_no_explicit_evidence(self):
         source = rag_pipeline.PromptSource(1, "source.pdf", "Page 1", "A policy about badges.", "source.pdf")
@@ -224,6 +251,30 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertFalse(result.explicit_evidence)
         self.assertEqual(result.failure_reason, "no_query_supported_passage")
         self.assertEqual(result.to_json()["schema_version"], "1.0")
+
+    def test_extractive_answer_uses_exact_passages_and_deterministic_citations(self):
+        source = rag_pipeline.PromptSource(4, "policy.pdf", "Page 3", "VPN requires manager approval.", "policy.pdf")
+        prompt = rag_pipeline.PromptResult("prompt", sources=(source,), context=source.text)
+        trace = rag_pipeline.PipelineTrace(query="What does VPN require?", prompt=prompt)
+        evidence = rag_evaluator.extract_evidence(trace)
+        answer = rag_evaluator.build_extractive_answer(evidence, "English")
+        self.assertEqual(answer.status, "ANSWER")
+        self.assertEqual(answer.source_ids, (4,))
+        self.assertEqual(answer.citation_ids, (4,))
+        self.assertIn("VPN requires manager approval.", answer.answer_text)
+        self.assertTrue(answer.answer_text.endswith("[SOURCE 4]"))
+        self.assertEqual(answer.sources[0]["source_file"], "policy.pdf")
+        self.assertEqual(answer.sources[0]["location"], "Page 3")
+
+    def test_extractive_answer_returns_clarification_without_evidence(self):
+        evidence = rag_evaluator.EvidenceExtractionResult(
+            "NO_EXPLICIT_EVIDENCE", "unknown", "English", (), (), False, "no_query_supported_passage",
+        )
+        answer = rag_evaluator.build_extractive_answer(evidence, "English")
+        self.assertEqual(answer.status, "NO_EXPLICIT_EVIDENCE")
+        self.assertEqual(answer.source_ids, ())
+        self.assertEqual(answer.citation_ids, ())
+        self.assertTrue(answer.answer_text)
 
     def test_refusal_and_report_serialization_are_deterministic(self):
         result = rag_evaluator.evaluate_case(

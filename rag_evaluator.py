@@ -121,6 +121,36 @@ class EvidenceExtractionResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ExtractiveAnswerResult:
+    """Deterministic answer assembled from exact extracted passage text."""
+
+    status: str
+    answer_text: str
+    evidence_ids: tuple[str, ...]
+    source_ids: tuple[int, ...]
+    sources: tuple[dict[str, Any], ...]
+    passage_hashes: tuple[str, ...]
+    citation_ids: tuple[int, ...]
+    latency_ms: float
+    unsupported_claim_count: int = 0
+    failure_reason: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "answer_text": self.answer_text,
+            "evidence_ids": list(self.evidence_ids),
+            "source_ids": list(self.source_ids),
+            "sources": [dict(source) for source in self.sources],
+            "passage_hashes": list(self.passage_hashes),
+            "citation_ids": list(self.citation_ids),
+            "latency_ms": self.latency_ms,
+            "unsupported_claim_count": self.unsupported_claim_count,
+            "failure_reason": self.failure_reason,
+        }
+
+
 G4_EXPLICIT_FACTS_SUFFIX = """[EVALUATOR-ONLY GROUNDING RULES]
 Answer only with facts explicitly stated in the supplied SOURCE sections.
 Do not use outside knowledge, assumptions, or facts from a source that is not supplied.
@@ -689,6 +719,16 @@ def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str
     }
     passage_terms = set(normalized_passage.split())
     matched = set(query_terms & passage_terms)
+    # Complementary lexical coverage handles inflectional variants such as
+    # ``ouverture``/``ouverte`` without introducing a synonym model.
+    for query_term in query_terms:
+        if len(query_term) < 5:
+            continue
+        if any(
+            passage_term.startswith(query_term[:5]) or query_term.startswith(passage_term[:5])
+            for passage_term in passage_terms if len(passage_term) >= 5
+        ):
+            matched.add(query_term)
     exact_values = set(re.findall(r"\b\d+(?:[.,:]\d+)?\b", query))
     passage_values = set(re.findall(r"\b\d+(?:[.,:]\d+)?\b", passage))
     matched_values = exact_values & passage_values
@@ -697,6 +737,11 @@ def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str
     passage_acronyms = set(re.findall(r"\b[A-Z][A-Za-z0-9]{1,}\b", passage))
     matched_acronyms = query_acronyms & passage_acronyms
     matched.update(matched_acronyms)
+    time_patterns = set(re.findall(r"\b\d{1,2}h\d{2}\b", passage, flags=re.IGNORECASE))
+    time_intent = any(term.startswith("heure") or term in {"ouverture", "horaire"} for term in query_terms)
+    if time_intent and time_patterns:
+        matched.update(query_term for query_term in query_terms if query_term.startswith("heure") or query_term in {"ouverture", "horaire"})
+        matched.update(f"time:{value}" for value in sorted(time_patterns))
     denominator = max(1, len(query_terms) + len(exact_values) + len(query_acronyms))
     score = (len(matched) + len(matched_values) + len(matched_acronyms)) / denominator
     return score, tuple(sorted(matched, key=lambda value: (value.casefold(), value)))
@@ -726,7 +771,16 @@ def extract_evidence(
                 continue
             candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
     candidates.sort(key=lambda item: (-item[0], item[1], item[2], normalize_evaluation_text(item[4])))
-    selected = candidates[:max(1, max_passages)]
+    selected: list[tuple[float, int, int, rag_pipeline.PromptSource, str, tuple[str, ...]]] = []
+    covered_terms: set[str] = set()
+    for candidate in candidates:
+        if len(selected) >= max(1, max_passages):
+            break
+        candidate_terms = set(candidate[5])
+        if selected and not candidate_terms.difference(covered_terms):
+            continue
+        selected.append(candidate)
+        covered_terms.update(candidate_terms)
     passages = tuple(
         EvidencePassage(
             evidence_id=f"E{index}", source_id=source.source_id, content_sha256=source_hash(source),
@@ -741,6 +795,99 @@ def extract_evidence(
             "NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "no_query_supported_passage",
         )
     return EvidenceExtractionResult("EVIDENCE_FOUND", query, trace.language, passages, source_ids, True)
+
+
+def build_extractive_answer(
+    evidence: EvidenceExtractionResult, language: str | None = None,
+) -> ExtractiveAnswerResult:
+    """Assemble an answer directly from evidence, without model generation."""
+
+    started = time.perf_counter()
+    if evidence.status != "EVIDENCE_FOUND" or not evidence.passages:
+        return ExtractiveAnswerResult(
+            status="NO_EXPLICIT_EVIDENCE",
+            answer_text=rag_pipeline.build_clarification_message(language or "French"),
+            evidence_ids=(), source_ids=(), sources=(), passage_hashes=(), citation_ids=(),
+            latency_ms=(time.perf_counter() - started) * 1000,
+            failure_reason=evidence.failure_reason,
+        )
+    answer_parts: list[str] = []
+    source_records: list[dict[str, Any]] = []
+    seen_passages: set[tuple[int, str]] = set()
+    for passage in evidence.passages:
+        key = (passage.source_id, passage.text)
+        if key in seen_passages:
+            continue
+        seen_passages.add(key)
+        answer_parts.append(f"{passage.text} [SOURCE {passage.source_id}]")
+        source_records.append({
+            "source_id": passage.source_id,
+            "source_file": passage.source_file,
+            "location": passage.location,
+            "content_sha256": passage.content_sha256,
+            "evidence_id": passage.evidence_id,
+        })
+    source_ids = tuple(record["source_id"] for record in source_records)
+    return ExtractiveAnswerResult(
+        status="ANSWER", answer_text="\n\n".join(answer_parts),
+        evidence_ids=tuple(record["evidence_id"] for record in source_records),
+        source_ids=source_ids, sources=tuple(source_records),
+        passage_hashes=tuple(record["content_sha256"] for record in source_records),
+        citation_ids=source_ids, latency_ms=(time.perf_counter() - started) * 1000,
+    )
+
+
+def run_extractive_answer_two_passes(
+    cases: Sequence[Mapping[str, Any]], runtime: EvaluationRuntime,
+    output_dir: Path, certified_controls: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Run deterministic control/extractive comparisons twice from certified traces."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fingerprint_before = grounding_runtime_fingerprint(runtime)
+    passes: dict[str, Any] = {}
+    for pass_number in (1, 2):
+        rows: dict[str, list[dict[str, Any]]] = {"control": [], "extractive": []}
+        checkpoint = output_dir / f"run_{pass_number}_checkpoint.json"
+        for case in cases:
+            control = certified_controls[case["id"]]
+            trace = control["trace"]
+            evidence = extract_evidence(trace)
+            support_sources = tuple(
+                source for source in (trace.prompt.sources if trace.prompt else ())
+                if source.source_id in evidence.supporting_source_ids
+            )
+            rows["control"].append({
+                "case_id": case["id"], "variant": "control", "response": control.get("response", ""),
+                "metrics": control.get("metrics", {}), "retrieval_parity": True,
+            })
+            answer = build_extractive_answer(evidence, language_label(case["language"]))
+            expected_hashes = {
+                item["content_sha256"] for item in case.get("acceptable_citations", [])
+            }
+            evidence_hashes = set(answer.passage_hashes)
+            citation_valid = bool(answer.citation_ids) and set(answer.citation_ids) <= set(answer.source_ids)
+            expected_source_match = bool(expected_hashes) and expected_hashes <= evidence_hashes
+            quality = grounding_quality_metrics(case, answer.answer_text, support_sources)
+            rows["extractive"].append({
+                "case_id": case["id"], "variant": "extractive", "response": answer.answer_text,
+                "status": answer.status, "metrics": {
+                    **quality,
+                    "citation_valid": citation_valid if case["answerability"] == "answerable" else None,
+                    "expected_source_match": expected_source_match if case["answerability"] == "answerable" else None,
+                    "latency_ms": answer.latency_ms, "generation_timeout_count": 0,
+                    "unsupported_answer_point_count": answer.unsupported_claim_count,
+                }, "retrieval_parity": retrieval_parity(trace, trace),
+                "extractive_answer": answer.to_json(), "evidence": evidence.to_json(),
+            })
+            checkpoint.write_text(json.dumps({"status": "PARTIAL", "rows": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+        fingerprint_after = grounding_runtime_fingerprint(runtime)
+        if fingerprint_before != fingerprint_after:
+            raise RuntimeError("Extractive answer fingerprint changed during evaluation")
+        summary = {"status": "COMPLETE", "fingerprint_match": True, "rows": rows}
+        checkpoint.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        passes[f"run_{pass_number}"] = summary
+    return {"status": "COMPLETE", "fingerprint": fingerprint_before, "passes": passes}
 
 
 def source_faithful_answer_variants(
