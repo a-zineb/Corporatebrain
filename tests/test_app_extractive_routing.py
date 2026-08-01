@@ -12,7 +12,11 @@ APP_SOURCE = (ROOT / "app.py").read_text(encoding="utf-8")
 
 def _load_helpers():
     tree = ast.parse(APP_SOURCE)
-    names = {"extractive_answers_enabled", "detect_direct_factual_intent"}
+    names = {
+        "extractive_answers_enabled",
+        "detect_direct_factual_intent",
+        "detect_catalog_intent",
+    }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
         type_ignores=[],
@@ -58,6 +62,33 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertIn("rag_pipeline.stream_generate(", APP_SOURCE)
         self.assertIn("rag_pipeline.extract_evidence(", APP_SOURCE)
         self.assertIn("rag_pipeline.build_extractive_answer(", APP_SOURCE)
+
+    def test_catalog_intent_is_distinct_from_direct_factual_intent(self):
+        helpers = _load_helpers()
+        catalog = helpers["detect_catalog_intent"]
+        direct = helpers["detect_direct_factual_intent"]
+        for query in (
+            "give me all the resources that u can use in any question",
+            "list all indexed documents",
+            "show the knowledge catalog",
+        ):
+            self.assertTrue(catalog(query))
+            self.assertFalse(direct(query))
+        self.assertFalse(catalog("Combien d'instances INZsmart sont déployées ?"))
+
+    def test_mode_control_and_actual_mode_are_persisted(self):
+        self.assertIn('st.session_state.answer_mode = "Auto"', APP_SOURCE)
+        self.assertIn('["Auto", "Direct answer", "AI answer", "Knowledge catalog"]', APP_SOURCE)
+        self.assertIn('"actual_mode": "catalog"', APP_SOURCE)
+        self.assertIn('"actual_mode": "extractive"', APP_SOURCE)
+        self.assertIn('"actual_mode": "generative"', APP_SOURCE)
+        self.assertIn("msg.get('actual_mode'", APP_SOURCE)
+
+    def test_catalog_and_direct_routes_stop_before_generation(self):
+        self.assertIn("if catalog_route:", APP_SOURCE)
+        self.assertIn("st.stop()", APP_SOURCE)
+        self.assertIn('answer_mode == "Direct answer"', APP_SOURCE)
+        self.assertIn("list_catalog_documents(collection, chroma_filter)", APP_SOURCE)
 
     def test_extract_route_preserves_filters_sources_and_audit_contract(self):
         self.assertIn("chroma_filter=chroma_filter", APP_SOURCE)

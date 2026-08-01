@@ -84,6 +84,17 @@ def detect_direct_factual_intent(query, has_history=False):
     return bool(re.match(prefix, lowered)) and len(re.findall(r"\b(?:and|et|or|ou)\b", lowered)) == 0
 
 
+def detect_catalog_intent(query):
+    """Recognize explicit requests for the indexed knowledge catalog."""
+    lowered = " ".join(str(query or "").casefold().split())
+    markers = (
+        "all resources", "all the resources", "all documents", "indexed documents", "knowledge catalog",
+        "catalogue de connaissances", "catalogue", "list all", "show the catalog",
+        "tous les documents", "toutes les ressources", "ressources disponibles",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 # ==========================================
 # 1. CONFIGURATION DE LA PAGE
 # ==========================================
@@ -503,6 +514,8 @@ if "messages" not in st.session_state:
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
+        if msg["role"] == "assistant":
+            st.caption(f"Mode : {msg.get('actual_mode', msg.get('answer_mode', 'generative'))}")
         st.markdown(msg["content"])
         if "sources" in msg and msg["sources"]:
             with st.expander(" Ressources consultées"):
@@ -522,6 +535,14 @@ for msg in st.session_state.messages:
                         folder_path = os.path.dirname(src.get("path", "")) if src.get("path") else ""
                         st.button(" Dossier", on_click=open_local_file, args=(folder_path,), key=f"hist_btn_{st.session_state.messages.index(msg)}_{i_src}_d")
 
+if "answer_mode" not in st.session_state:
+    st.session_state.answer_mode = "Auto"
+answer_mode = st.selectbox(
+    "Mode de réponse",
+    ["Auto", "Direct answer", "AI answer", "Knowledge catalog"],
+    key="answer_mode",
+)
+
 if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
 
     current_lang = detect_query_language(user_query, fallback_lang=st.session_state.last_lang)
@@ -530,9 +551,62 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
     with st.chat_message("user"):
         st.markdown(user_query)
 
+    catalog_route = answer_mode == "Knowledge catalog" or (
+        answer_mode == "Auto" and detect_catalog_intent(user_query)
+    )
+    if catalog_route:
+        catalog_rows = list_catalog_documents(collection, chroma_filter)
+        catalog_lines = [
+            f"- {row.get('application', 'Non classée')} / "
+            f"{row.get('geographical_entity', 'Non classée')} — "
+            f"{row.get('source_file', 'Fichier source')}"
+            for row in catalog_rows
+        ]
+        catalog_text = (
+            "Documents indexés :\n" + "\n".join(catalog_lines)
+            if catalog_lines
+            else "Aucun document indexé dans le périmètre sélectionné."
+        )
+        with st.chat_message("assistant"):
+            st.caption("Mode : catalogue")
+            st.markdown(catalog_text)
+            with st.expander(" Ressources consultées"):
+                for index, row in enumerate(catalog_rows):
+                    filename = row.get("source_file", "")
+                    st.write(filename)
+                    st.button(
+                        " Fichier",
+                        on_click=open_local_file,
+                        args=(os.path.abspath(os.path.join(STORAGE_DIR, filename)),),
+                        key=f"chat_catalog_file_{len(st.session_state.messages)}_{index}",
+                    )
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": catalog_text,
+            "actual_mode": "catalog",
+            "sources": [],
+        })
+        with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+            audit_f.write(json.dumps({
+                "timestamp": datetime.now().isoformat(),
+                "question_originale": user_query,
+                "language": current_lang,
+                "requested_mode": answer_mode,
+                "actual_mode": "catalog",
+                "sources_count": len(catalog_rows),
+            }, ensure_ascii=False) + "\n")
+        st.stop()
+
     # 1. Reformulation de la question (extractive is standalone-only and opt-in).
-    extractive_route = extractive_answers_enabled() and detect_direct_factual_intent(
-        user_query, has_history=bool(st.session_state.messages)
+    extractive_route = (
+        answer_mode == "Direct answer"
+        or (
+            answer_mode == "Auto"
+            and detect_direct_factual_intent(
+                user_query, has_history=bool(st.session_state.messages)
+            )
+        )
     )
     standalone_query = (
         user_query
@@ -545,7 +619,9 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         with st.chat_message("assistant"):
             st.warning(no_docs)
         st.session_state.messages.append({"role": "user", "content": user_query})
-        st.session_state.messages.append({"role": "assistant", "content": no_docs})
+        st.session_state.messages.append({
+            "role": "assistant", "content": no_docs, "actual_mode": "generative",
+        })
     else:
         # 2. Recherche Hybride (Vectoriel + BM25 avec RRF), avec repli élargi automatique
         filtered_chunks, filtered_metas, relaxed_chunks, relaxed_metas, was_relaxed = hybrid_search(
@@ -578,7 +654,9 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             with st.chat_message("assistant"):
                 st.markdown(no_match_msg)
             st.session_state.messages.append({"role": "user", "content": user_query})
-            st.session_state.messages.append({"role": "assistant", "content": no_match_msg})
+            st.session_state.messages.append({
+                "role": "assistant", "content": no_match_msg, "actual_mode": "generative",
+            })
         else:
             if extractive_route:
                 extractive_result = None
@@ -653,6 +731,8 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "sources_count": len(display_sources),
                         "used_relaxed_fallback": was_relaxed,
                         "answer_mode": "extractive",
+                        "requested_mode": answer_mode,
+                        "actual_mode": "extractive",
                         "extractive_feature_enabled": True,
                         "extractive_status": extractive_result.status,
                         "extractive_evidence_ids": list(extractive_result.evidence_ids),
@@ -745,6 +825,8 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "language": current_lang,
                         "sources_count": len(display_sources),
                         "used_relaxed_fallback": was_relaxed
+                        ,"requested_mode": answer_mode,
+                        "actual_mode": "generative",
                     }
                     with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
                         audit_f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
@@ -753,7 +835,8 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": full_stream_response,
-                        "sources": display_sources
+                        "sources": display_sources,
+                        "actual_mode": "generative",
                     })
 
                 except Exception as e:
