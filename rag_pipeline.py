@@ -13,6 +13,7 @@ silently breaking future consumers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import os
 import re
 import time
@@ -48,6 +49,9 @@ __all__ = [
     "PipelineTimings",
     "PipelineFailure",
     "PipelineTrace",
+    "EvidencePassage",
+    "EvidenceExtractionResult",
+    "ExtractiveAnswerResult",
     "EmbeddingEncoder",
     "VectorStore",
     "TextGenerator",
@@ -68,6 +72,8 @@ __all__ = [
     "detect_no_coverage",
     "select_display_sources",
     "deduplicate_sources_by_path",
+    "extract_evidence",
+    "build_extractive_answer",
 ]
 
 
@@ -804,3 +810,199 @@ def deduplicate_sources_by_path(sources: Sequence[PromptSource]) -> tuple[Prompt
         if source.path not in unique_sources:
             unique_sources[source.path] = source
     return tuple(unique_sources.values())
+
+
+# Deterministic evidence/extractive APIs.  These functions are runtime-neutral:
+# they consume an already-built trace and never perform retrieval or generation.
+@dataclass(frozen=True, slots=True)
+class EvidencePassage:
+    """One verbatim passage selected from an existing prompt source."""
+
+    evidence_id: str
+    source_id: int
+    content_sha256: str
+    source_file: str
+    location: str
+    text: str
+    sentence_index: int
+    match_score: float
+    matched_terms: tuple[str, ...]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "evidence_id": self.evidence_id, "source_id": self.source_id,
+            "content_sha256": self.content_sha256, "source_file": self.source_file,
+            "location": self.location, "text": self.text,
+            "sentence_index": self.sentence_index, "match_score": self.match_score,
+            "matched_terms": list(self.matched_terms),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceExtractionResult:
+    """Stable evidence extraction result with no benchmark dependencies."""
+
+    status: str
+    query: str
+    language: str | None
+    passages: tuple[EvidencePassage, ...]
+    supporting_source_ids: tuple[int, ...]
+    explicit_evidence: bool
+    failure_reason: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0", "status": self.status, "query": self.query,
+            "language": self.language, "passages": [p.to_json() for p in self.passages],
+            "supporting_source_ids": list(self.supporting_source_ids),
+            "explicit_evidence": self.explicit_evidence, "failure_reason": self.failure_reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractiveAnswerResult:
+    """Deterministic answer assembled from exact extracted passage text."""
+
+    status: str
+    answer_text: str
+    evidence_ids: tuple[str, ...]
+    source_ids: tuple[int, ...]
+    sources: tuple[dict[str, Any], ...]
+    passage_hashes: tuple[str, ...]
+    citation_ids: tuple[int, ...]
+    latency_ms: float
+    unsupported_claim_count: int = 0
+    failure_reason: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "status": self.status, "answer_text": self.answer_text,
+            "evidence_ids": list(self.evidence_ids), "source_ids": list(self.source_ids),
+            "sources": [dict(source) for source in self.sources],
+            "passage_hashes": list(self.passage_hashes), "citation_ids": list(self.citation_ids),
+            "latency_ms": self.latency_ms, "unsupported_claim_count": self.unsupported_claim_count,
+            "failure_reason": self.failure_reason,
+        }
+
+
+_EVIDENCE_MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð", "�")
+_EVIDENCE_APOSTROPHE_VARIANTS = "'`´‘’‛ʼ＇"
+_EVIDENCE_STOPWORDS = {
+    "the", "and", "for", "what", "where", "which", "how", "many", "are", "is", "to",
+    "les", "des", "une", "quel", "quelle", "quels", "quelles", "combien", "ou", "est", "sont",
+}
+
+
+def _normalize_evidence_text(value: object) -> str:
+    text = str(value or "")
+    for _ in range(3):
+        if not any(marker in text for marker in _EVIDENCE_MOJIBAKE_MARKERS):
+            break
+        try:
+            repaired = text.encode("latin-1").decode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            break
+        if repaired == text:
+            break
+        text = repaired
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(str.maketrans({character: " " for character in _EVIDENCE_APOSTROPHE_VARIANTS}))
+    text = "".join(character for character in unicodedata.normalize("NFKD", text) if not unicodedata.combining(character))
+    return re.sub(r"\s+", " ", re.sub(r"[^\w]+", " ", text.casefold())).strip()
+
+
+def _evidence_source_hash(source: PromptSource) -> str:
+    return hashlib.sha256(source.text.encode("utf-8")).hexdigest()
+
+
+def _split_evidence_sentences(text: str) -> tuple[str, ...]:
+    pieces = re.split(r"(?<=[.!?ã€‚ï¼ï¼Ÿ])\s+|\n+", text)
+    return tuple(piece.strip() for piece in pieces if piece.strip())
+
+
+def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str, ...]]:
+    normalized_query = _normalize_evidence_text(query)
+    normalized_passage = _normalize_evidence_text(passage)
+    query_terms = {term for term in normalized_query.split() if len(term) > 2 and term not in _EVIDENCE_STOPWORDS}
+    passage_terms = set(normalized_passage.split())
+    matched = set(query_terms & passage_terms)
+    for query_term in query_terms:
+        if len(query_term) >= 5 and any(
+            passage_term.startswith(query_term[:5]) or query_term.startswith(passage_term[:5])
+            for passage_term in passage_terms if len(passage_term) >= 5
+        ):
+            matched.add(query_term)
+    exact_values = set(re.findall(r"\b\d+(?:[.,:]\d+)?\b", query))
+    passage_values = set(re.findall(r"\b\d+(?:[.,:]\d+)?\b", passage))
+    matched_values = exact_values & passage_values
+    matched.update(matched_values)
+    query_acronyms = set(re.findall(r"\b[A-Z][A-Za-z0-9]{1,}\b", query))
+    passage_acronyms = set(re.findall(r"\b[A-Z][A-Za-z0-9]{1,}\b", passage))
+    matched_acronyms = query_acronyms & passage_acronyms
+    matched.update(matched_acronyms)
+    time_patterns = set(re.findall(r"\b\d{1,2}h\d{2}\b", passage, flags=re.IGNORECASE))
+    time_intent = any(term.startswith("heure") or term in {"ouverture", "horaire"} for term in query_terms)
+    if time_intent and time_patterns:
+        matched.update(term for term in query_terms if term.startswith("heure") or term in {"ouverture", "horaire"})
+        matched.update(f"time:{value}" for value in sorted(time_patterns))
+    denominator = max(1, len(query_terms) + len(exact_values) + len(query_acronyms))
+    score = (len(matched) + len(matched_values) + len(matched_acronyms)) / denominator
+    return score, tuple(sorted(matched, key=lambda value: (value.casefold(), value)))
+
+
+def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> EvidenceExtractionResult:
+    """Extract deterministic passages from a certified trace without leakage."""
+
+    query = trace.rewritten_query or trace.query
+    if trace.prompt is None or not trace.prompt.sources:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "no_prompt_sources")
+    candidates: list[tuple[float, int, int, PromptSource, str, tuple[str, ...]]] = []
+    seen: set[tuple[str, str]] = set()
+    for source in trace.prompt.sources:
+        for sentence_index, passage in enumerate(_split_evidence_sentences(source.text)):
+            key = (_evidence_source_hash(source), _normalize_evidence_text(passage))
+            if key in seen:
+                continue
+            seen.add(key)
+            score, matched_terms = _evidence_match_features(query, passage)
+            if score > 0 and matched_terms:
+                candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2], _normalize_evidence_text(item[4])))
+    selected: list[tuple[float, int, int, PromptSource, str, tuple[str, ...]]] = []
+    covered_terms: set[str] = set()
+    for candidate in candidates:
+        if len(selected) >= max(1, max_passages):
+            break
+        terms = set(candidate[5])
+        if selected and not terms.difference(covered_terms):
+            continue
+        selected.append(candidate)
+        covered_terms.update(terms)
+    passages = tuple(
+        EvidencePassage(f"E{index}", source.source_id, _evidence_source_hash(source), source.file_name, source.location, passage, sentence_index, round(score, 8), matched_terms)
+        for index, (score, _source_id, sentence_index, source, passage, matched_terms) in enumerate(selected, 1)
+    )
+    source_ids = tuple(sorted({passage.source_id for passage in passages}))
+    if not passages:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "no_query_supported_passage")
+    return EvidenceExtractionResult("EVIDENCE_FOUND", query, trace.language, passages, source_ids, True)
+
+
+def build_extractive_answer(evidence: EvidenceExtractionResult, language: str | None = None) -> ExtractiveAnswerResult:
+    """Build an exact-text answer with deterministic source citations."""
+
+    started = time.perf_counter()
+    if evidence.status != "EVIDENCE_FOUND" or not evidence.passages:
+        return ExtractiveAnswerResult("NO_EXPLICIT_EVIDENCE", build_clarification_message(language or "French"), (), (), (), (), (), (time.perf_counter() - started) * 1000, failure_reason=evidence.failure_reason)
+    answer_parts: list[str] = []
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for passage in evidence.passages:
+        key = (passage.source_id, passage.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        answer_parts.append(f"{passage.text} [SOURCE {passage.source_id}]")
+        records.append({"source_id": passage.source_id, "source_file": passage.source_file, "location": passage.location, "content_sha256": passage.content_sha256, "evidence_id": passage.evidence_id})
+    source_ids = tuple(record["source_id"] for record in records)
+    return ExtractiveAnswerResult("ANSWER", "\n\n".join(answer_parts), tuple(record["evidence_id"] for record in records), source_ids, tuple(records), tuple(record["content_sha256"] for record in records), source_ids, (time.perf_counter() - started) * 1000)

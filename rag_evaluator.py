@@ -68,89 +68,6 @@ class ContextGroundingExperiment:
     prompt_suffix: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class EvidencePassage:
-    """One verbatim passage selected from an existing prompt source."""
-
-    evidence_id: str
-    source_id: int
-    content_sha256: str
-    source_file: str
-    location: str
-    text: str
-    sentence_index: int
-    match_score: float
-    matched_terms: tuple[str, ...]
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "evidence_id": self.evidence_id,
-            "source_id": self.source_id,
-            "content_sha256": self.content_sha256,
-            "source_file": self.source_file,
-            "location": self.location,
-            "text": self.text,
-            "sentence_index": self.sentence_index,
-            "match_score": self.match_score,
-            "matched_terms": list(self.matched_terms),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceExtractionResult:
-    """Stable, evaluator-only evidence extraction output."""
-
-    status: str
-    query: str
-    language: str | None
-    passages: tuple[EvidencePassage, ...]
-    supporting_source_ids: tuple[int, ...]
-    explicit_evidence: bool
-    failure_reason: str | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "schema_version": "1.0",
-            "status": self.status,
-            "query": self.query,
-            "language": self.language,
-            "passages": [passage.to_json() for passage in self.passages],
-            "supporting_source_ids": list(self.supporting_source_ids),
-            "explicit_evidence": self.explicit_evidence,
-            "failure_reason": self.failure_reason,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ExtractiveAnswerResult:
-    """Deterministic answer assembled from exact extracted passage text."""
-
-    status: str
-    answer_text: str
-    evidence_ids: tuple[str, ...]
-    source_ids: tuple[int, ...]
-    sources: tuple[dict[str, Any], ...]
-    passage_hashes: tuple[str, ...]
-    citation_ids: tuple[int, ...]
-    latency_ms: float
-    unsupported_claim_count: int = 0
-    failure_reason: str | None = None
-
-    def to_json(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "answer_text": self.answer_text,
-            "evidence_ids": list(self.evidence_ids),
-            "source_ids": list(self.source_ids),
-            "sources": [dict(source) for source in self.sources],
-            "passage_hashes": list(self.passage_hashes),
-            "citation_ids": list(self.citation_ids),
-            "latency_ms": self.latency_ms,
-            "unsupported_claim_count": self.unsupported_claim_count,
-            "failure_reason": self.failure_reason,
-        }
-
-
 G4_EXPLICIT_FACTS_SUFFIX = """[EVALUATOR-ONLY GROUNDING RULES]
 Answer only with facts explicitly stated in the supplied SOURCE sections.
 Do not use outside knowledge, assumptions, or facts from a source that is not supplied.
@@ -835,6 +752,15 @@ def build_extractive_answer(
         passage_hashes=tuple(record["content_sha256"] for record in source_records),
         citation_ids=source_ids, latency_ms=(time.perf_counter() - started) * 1000,
     )
+
+
+# Shared runtime is the single source of truth; these aliases preserve the
+# evaluator's established public names without retaining a second behavior.
+EvidencePassage = rag_pipeline.EvidencePassage
+EvidenceExtractionResult = rag_pipeline.EvidenceExtractionResult
+ExtractiveAnswerResult = rag_pipeline.ExtractiveAnswerResult
+extract_evidence = rag_pipeline.extract_evidence
+build_extractive_answer = rag_pipeline.build_extractive_answer
 
 
 def run_extractive_answer_two_passes(

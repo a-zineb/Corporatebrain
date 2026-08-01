@@ -6,7 +6,10 @@ import ast
 import hashlib
 import json
 import multiprocessing
+import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -241,6 +244,34 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertNotIn("badge temporaire", " ".join(texts))
         self.assertEqual(result.supporting_source_ids, (3,))
         self.assertTrue(any("time:12h00" in passage.matched_terms for passage in result.passages))
+
+    def test_shared_extractive_outputs_match_8645dc3_baseline(self):
+        source = rag_pipeline.PromptSource(3, "local.pdf", "Page 1", "La cafétéria est ouverte de 12h00 à 14h30.", "local.pdf")
+        trace = rag_pipeline.PipelineTrace(
+            query="Où se situe la cafétéria et quelles sont ses heures d'ouverture ?",
+            rewritten_query="Où se situe la cafétéria et quelles sont ses heures d'ouverture ?",
+            language="French", prompt=rag_pipeline.PromptResult("prompt", sources=(source,), context=source.text),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            baseline_path = Path(temporary) / "baseline_rag_evaluator.py"
+            baseline_path.write_text(
+                subprocess.check_output(["git", "show", "8645dc3:rag_evaluator.py"], text=True, encoding="utf-8"),
+                encoding="utf-8",
+            )
+            spec = importlib.util.spec_from_file_location("baseline_rag_evaluator", baseline_path)
+            self.assertIsNotNone(spec)
+            baseline = importlib.util.module_from_spec(spec)
+            sys.modules["baseline_rag_evaluator"] = baseline
+            assert spec.loader is not None
+            spec.loader.exec_module(baseline)
+        current_evidence = rag_pipeline.extract_evidence(trace).to_json()
+        baseline_evidence = baseline.extract_evidence(trace).to_json()
+        self.assertEqual(current_evidence, baseline_evidence)
+        current_answer = rag_pipeline.build_extractive_answer(rag_pipeline.extract_evidence(trace), "French").to_json()
+        baseline_answer = baseline.build_extractive_answer(baseline.extract_evidence(trace), "French").to_json()
+        current_answer.pop("latency_ms")
+        baseline_answer.pop("latency_ms")
+        self.assertEqual(current_answer, baseline_answer)
 
     def test_evidence_extraction_returns_structured_no_explicit_evidence(self):
         source = rag_pipeline.PromptSource(1, "source.pdf", "Page 1", "A policy about badges.", "source.pdf")

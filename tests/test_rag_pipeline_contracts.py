@@ -81,10 +81,13 @@ class RAGPipelineContractTests(unittest.TestCase):
         forbidden = {"app", "chromadb", "ollama", "streamlit", "sentence_transformers"}
         self.assertFalse(imported_roots & forbidden)
 
-    def test_module_declares_only_approved_retrieval_runtime_functions(self) -> None:
+    def test_module_declares_only_approved_runtime_functions(self) -> None:
         module_path = PROJECT_ROOT / "rag_pipeline.py"
         tree = ast.parse(module_path.read_text(encoding="utf-8"))
-        module_functions = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        module_functions = [
+            node.name for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
+        ]
         self.assertEqual(
             module_functions,
             [
@@ -104,6 +107,8 @@ class RAGPipelineContractTests(unittest.TestCase):
                 "detect_no_coverage",
                 "select_display_sources",
                 "deduplicate_sources_by_path",
+                "extract_evidence",
+                "build_extractive_answer",
             ],
         )
 
