@@ -95,6 +95,25 @@ def detect_catalog_intent(query):
     return any(marker in lowered for marker in markers)
 
 
+def detect_catalog_continuation(query, previous_actual_mode=None):
+    """Keep catalog follow-ups in catalog mode after a catalog response."""
+    if previous_actual_mode != "catalog":
+        return False
+    lowered = " ".join(str(query or "").casefold().split())
+    if any(marker in lowered for marker in (
+        "explain", "expliquer", "why", "pourquoi", "how does", "comment fonctionne",
+        "compare", "compar", "summary", "résumé", "resume",
+    )):
+        return False
+    continuation_markers = (
+        "files", "file", "documents", "document", "all of them", "show them",
+        "those documents", "only the pdfs", "only pdf", "give me the files",
+        "the files that are in here", "fichiers", "documents", "tous", "toutes",
+        "ceux-là", "ceux la", "montre-les", "uniquement les pdf",
+    )
+    return any(marker in lowered for marker in continuation_markers)
+
+
 # ==========================================
 # 1. CONFIGURATION DE LA PAGE
 # ==========================================
@@ -551,8 +570,23 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
     with st.chat_message("user"):
         st.markdown(user_query)
 
-    catalog_route = answer_mode == "Knowledge catalog" or (
-        answer_mode == "Auto" and detect_catalog_intent(user_query)
+    previous_actual_mode = next(
+        (
+            message.get("actual_mode")
+            for message in reversed(st.session_state.messages)
+            if message.get("role") == "assistant"
+        ),
+        None,
+    )
+    catalog_route = (
+        answer_mode == "Knowledge catalog"
+        or (
+            answer_mode == "Auto"
+            and (
+                detect_catalog_intent(user_query)
+                or detect_catalog_continuation(user_query, previous_actual_mode)
+            )
+        )
     )
     if catalog_route:
         catalog_rows = list_catalog_documents(collection, chroma_filter)

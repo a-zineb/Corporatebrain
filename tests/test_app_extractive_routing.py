@@ -16,6 +16,7 @@ def _load_helpers():
         "extractive_answers_enabled",
         "detect_direct_factual_intent",
         "detect_catalog_intent",
+        "detect_catalog_continuation",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
@@ -89,6 +90,32 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertIn("st.stop()", APP_SOURCE)
         self.assertIn('answer_mode == "Direct answer"', APP_SOURCE)
         self.assertIn("list_catalog_documents(collection, chroma_filter)", APP_SOURCE)
+
+    def test_catalog_followup_sequence_stays_in_catalog(self):
+        helpers = _load_helpers()
+        continuation = helpers["detect_catalog_continuation"]
+        for query in (
+            "files?",
+            "files",
+            "non give me the files that are in here",
+            "all of them",
+            "only the PDFs",
+        ):
+            self.assertTrue(continuation(query, "catalog"), query)
+        self.assertFalse(continuation("Explain the CRBT workflow", "catalog"))
+        self.assertFalse(continuation("files", "generative"))
+
+    def test_catalog_continuation_precedes_extractive_and_avoids_llm_stages(self):
+        self.assertIn("detect_catalog_continuation(user_query, previous_actual_mode)", APP_SOURCE)
+        self.assertLess(
+            APP_SOURCE.index("catalog_route ="),
+            APP_SOURCE.index("extractive_route ="),
+        )
+        route = APP_SOURCE[APP_SOURCE.index("if catalog_route:"):APP_SOURCE.index("# 1. Reformulation")]
+        self.assertNotIn("contextualize_query(", route)
+        self.assertNotIn("hybrid_search(", route)
+        self.assertNotIn("extract_evidence(", route)
+        self.assertNotIn("stream_generate(", route)
 
     def test_extract_route_preserves_filters_sources_and_audit_contract(self):
         self.assertIn("chroma_filter=chroma_filter", APP_SOURCE)
