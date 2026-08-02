@@ -20,6 +20,7 @@ def _load_helpers():
         "normalize_catalog_text",
         "parse_catalog_refinements",
         "list_catalog_documents",
+        "merge_catalog_refinements",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
@@ -187,8 +188,43 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertEqual(parsed["file_types"], [])
         self.assertEqual(parsed["terms"], [])
 
+    def test_catalog_refinements_replace_standalone_queries(self):
+        helpers = _load_helpers()
+        parse = helpers["parse_catalog_refinements"]
+        merge = helpers["merge_catalog_refinements"]
+        state = {}
+        expected = [
+            ([], []), (["pdf"], []), (["doc", "docx"], []),
+            (["doc", "docx"], []), ([], []), ([], []),
+        ]
+        queries = [
+            "Show all indexed documents", "pdf files", "word files",
+            "docx", "docs", "Show all indexed documents",
+        ]
+        for query, (types, terms) in zip(queries, expected):
+            state = merge(state, parse(query), continuation=False)
+            self.assertEqual(state["file_types"], types, query)
+            self.assertEqual(state["terms"], terms, query)
+
+    def test_explicit_continuations_reuse_or_clear_state(self):
+        helpers = _load_helpers()
+        parse = helpers["parse_catalog_refinements"]
+        merge = helpers["merge_catalog_refinements"]
+        state = {"file_types": ["pdf"], "terms": ["crbt"], "metadata": {}}
+        self.assertEqual(merge(state, parse("show them"), continuation=True), state)
+        refined = merge(state, parse("only those PDFs"), continuation=True)
+        self.assertEqual(refined["file_types"], ["pdf"])
+        self.assertEqual(merge(state, parse("all of them"), continuation=True), {})
+
+    def test_catalog_state_is_explicitly_initialized_and_cleared(self):
+        self.assertIn("st.session_state.catalog_refinements = {}", APP_SOURCE)
+        self.assertIn("st.session_state.catalog_mode_last", APP_SOURCE)
+        reset_start = APP_SOURCE.index('if st.button(" Réinitialiser la discussion")')
+        reset_end = APP_SOURCE.index("st.rerun()", reset_start)
+        self.assertIn("catalog_refinements = {}", APP_SOURCE[reset_start:reset_end])
+
     def test_catalog_continuation_precedes_extractive_and_avoids_llm_stages(self):
-        self.assertNotIn("detect_catalog_continuation(user_query, previous_actual_mode)", APP_SOURCE)
+        self.assertIn("detect_catalog_continuation(user_query, previous_actual_mode)", APP_SOURCE)
         self.assertLess(
             APP_SOURCE.index("catalog_route ="),
             APP_SOURCE.index("extractive_route ="),

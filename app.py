@@ -128,7 +128,7 @@ def parse_catalog_refinements(query):
             metadata["application"] = application.upper()
     stop = {
         "only", "the", "a", "an", "all", "of", "them", "files", "file", "documents",
-        "document", "show", "give", "me", "that", "are", "in", "here", "do", "you",
+        "document", "docs", "resources", "resource", "show", "give", "me", "that", "are", "in", "here", "do", "you",
         "have", "what", "list", "indexed", "knowledge", "catalog", "catalogue",
         "pdf", "pdfs", "doc", "docx", "word", "words", "xls", "xlsx", "excel", "excels",
         "ocm", "oeg", "ojo", "oci", "kpsa", "mz",
@@ -139,6 +139,26 @@ def parse_catalog_refinements(query):
         "file_types": sorted(set(file_types)),
         "terms": sorted(set(terms)),
         "metadata": metadata,
+    }
+
+
+def merge_catalog_refinements(previous, current, continuation=False):
+    """Reuse prior catalog state only for explicit continuations."""
+    if not continuation:
+        return {
+            "file_types": list(current.get("file_types", [])),
+            "terms": list(current.get("terms", [])),
+            "metadata": dict(current.get("metadata", {})),
+        }
+    if current.get("clear"):
+        return {}
+    return {
+        "file_types": list(current.get("file_types") or previous.get("file_types", [])),
+        "terms": list(current.get("terms") or previous.get("terms", [])),
+        "metadata": {
+            **previous.get("metadata", {}),
+            **current.get("metadata", {}),
+        },
     }
 
 def parse_catalog_refinements(query):
@@ -163,7 +183,7 @@ def parse_catalog_refinements(query):
             metadata["application"] = application.upper()
     stop = {
         "only", "the", "a", "an", "all", "of", "them", "files", "file", "documents",
-        "document", "show", "give", "me", "that", "are", "in", "here", "do", "you",
+        "document", "docs", "resources", "resource", "show", "give", "me", "that", "are", "in", "here", "do", "you",
         "have", "what", "list", "indexed", "knowledge", "catalog", "catalogue",
         "pdf", "pdfs", "doc", "docx", "word", "words", "xls", "xlsx", "excel", "excels",
         "ocm", "oeg", "ojo", "oci", "kpsa", "mz",
@@ -189,8 +209,8 @@ def detect_catalog_continuation(query, previous_actual_mode=None):
         return False
     continuation_markers = (
         "files", "file", "documents", "document", "all of them", "show them",
-        "those documents", "only the pdfs", "only the pdf documents", "only pdf",
-        "give me the files",
+        "those documents", "only those pdfs", "only those pdf", "only the pdfs",
+        "only the pdf documents", "only pdf", "give me the files",
         "the files that are in here", "fichiers", "documents", "tous", "toutes",
         "ceux-là", "ceux la", "montre-les", "uniquement les pdf",
     )
@@ -609,6 +629,7 @@ with st.sidebar:
     if st.button(" Réinitialiser la discussion"):
         st.session_state.messages = []
         st.session_state.last_lang = "French"
+        st.session_state.catalog_refinements = {}
         st.rerun()
 
 # ==========================================
@@ -670,6 +691,14 @@ for msg in st.session_state.messages:
 
 if "answer_mode" not in st.session_state:
     st.session_state.answer_mode = "AI answer"
+if "catalog_refinements" not in st.session_state:
+    st.session_state.catalog_refinements = {}
+if "catalog_mode_last" not in st.session_state:
+    st.session_state.catalog_mode_last = st.session_state.answer_mode
+elif st.session_state.answer_mode != st.session_state.catalog_mode_last:
+    if st.session_state.answer_mode != "Knowledge catalog":
+        st.session_state.catalog_refinements = {}
+    st.session_state.catalog_mode_last = st.session_state.answer_mode
 answer_mode = st.selectbox(
     "Mode de réponse",
     ["Knowledge catalog", "Direct answer", "AI answer"],
@@ -698,36 +727,22 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         ),
         None,
     )
-    previous_catalog_refinements = next(
-        (
-            message.get("catalog_refinements", {})
-            for message in reversed(st.session_state.messages)
-            if message.get("role") == "assistant" and message.get("actual_mode") == "catalog"
-        ),
-        {},
-    )
+    previous_catalog_refinements = dict(st.session_state.catalog_refinements)
     current_catalog_refinements = parse_catalog_refinements(user_query)
-    if current_catalog_refinements.get("clear"):
-        catalog_refinements = {}
-    else:
-        catalog_refinements = {
-            "file_types": sorted(set(
-                previous_catalog_refinements.get("file_types", [])
-                + current_catalog_refinements.get("file_types", [])
-            )),
-            "terms": sorted(set(
-                previous_catalog_refinements.get("terms", [])
-                + current_catalog_refinements.get("terms", [])
-            )),
-            "metadata": {
-                **previous_catalog_refinements.get("metadata", {}),
-                **current_catalog_refinements.get("metadata", {}),
-            },
-        }
+    continuation = (
+        answer_mode == "Knowledge catalog"
+        and detect_catalog_continuation(user_query, previous_actual_mode)
+    )
+    catalog_refinements = merge_catalog_refinements(
+        previous_catalog_refinements,
+        current_catalog_refinements,
+        continuation=continuation,
+    )
     catalog_route = (
         answer_mode == "Knowledge catalog"
     )
     if catalog_route:
+        st.session_state.catalog_refinements = catalog_refinements
         catalog_rows = list_catalog_documents(
             collection, chroma_filter, catalog_refinements
         )
