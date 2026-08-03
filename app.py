@@ -389,6 +389,32 @@ def list_catalog_documents(collection, chroma_filter=None, refinements=None):
     ))
 
 
+def direct_document_identity(metadata):
+    """Return the stable document identity, preferring file_hash."""
+    return str(metadata.get("file_hash") or metadata.get("source_file") or "")
+
+
+def build_direct_document_filter(active_filter, metadata):
+    """Combine active sidebar scope with the selected document identity."""
+    key = "file_hash" if metadata.get("file_hash") else "source_file"
+    condition = {key: metadata.get(key)}
+    if not active_filter:
+        return condition
+    if "$and" in active_filter:
+        return {"$and": [*active_filter["$and"], condition]}
+    return {"$and": [active_filter, condition]}
+
+
+def resolve_direct_document(collection, active_filter, document_id):
+    """Resolve and validate a selected document inside the active filter scope."""
+    if not document_id:
+        return None
+    for metadata in list_catalog_documents(collection, active_filter):
+        if direct_document_identity(metadata) == document_id:
+            return metadata
+    return None
+
+
 # ==========================================
 # 4. FONCTIONS UTILITAIRES (DÉTECTION, MODELS, REFORMULATION)
 # ==========================================
@@ -768,6 +794,45 @@ answer_mode = st.selectbox(
     ["Knowledge catalog", "Direct answer", "AI answer"],
     key="answer_mode",
 )
+if "direct_answer_document_id" not in st.session_state:
+    st.session_state.direct_answer_document_id = None
+direct_scope = "all_documents_experimental"
+if answer_mode == "Direct answer":
+    direct_scope = st.selectbox(
+        "Scope",
+        ["specific_document", "all_documents_experimental"],
+        format_func=lambda value: (
+            "Specific document" if value == "specific_document"
+            else "All documents — experimental"
+        ),
+        key="direct_answer_scope",
+    )
+    if direct_scope == "specific_document":
+        direct_documents = list_catalog_documents(collection, chroma_filter)
+        direct_options = {
+            direct_document_identity(metadata): metadata
+            for metadata in direct_documents
+        }
+        option_ids = [key for key in sorted(
+            direct_options,
+            key=lambda key: str(direct_options[key].get("source_file", "")).casefold(),
+        )]
+        if option_ids:
+            if st.session_state.direct_answer_document_id not in option_ids:
+                st.session_state.direct_answer_document_id = None
+            selected_id = st.selectbox(
+                "Document",
+                [None, *option_ids],
+                format_func=lambda value: (
+                    "Select a document..." if value is None
+                    else direct_options[value].get("source_file", value)
+                ),
+                key="direct_answer_document_selector",
+            )
+            st.session_state.direct_answer_document_id = selected_id
+        else:
+            st.session_state.direct_answer_document_id = None
+            st.info("Aucun document disponible dans le périmètre des filtres actifs.")
 st.caption(
     "Knowledge catalog : liste complète des documents. "
     "Direct answer : extraction déterministe. "
@@ -897,6 +962,38 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             }, ensure_ascii=False) + "\n")
         st.stop()
 
+    direct_document = None
+    if answer_mode == "Direct answer" and direct_scope == "specific_document":
+        direct_document = resolve_direct_document(
+            collection, chroma_filter, st.session_state.direct_answer_document_id
+        )
+        if direct_document is None:
+            missing_scope_message = (
+                "Sélectionnez un document valide dans le périmètre des filtres actifs avant d'utiliser Direct answer."
+                if current_lang != "English"
+                else "Select a valid document within the active filter scope before using Direct answer."
+            )
+            with st.chat_message("assistant"):
+                st.caption("Mode : direct_missing_document_scope")
+                st.info(missing_scope_message)
+            st.session_state.messages.append({"role": "user", "content": user_query})
+            st.session_state.messages.append({
+                "role": "assistant", "content": missing_scope_message,
+                "actual_mode": "direct_missing_document_scope", "sources": [],
+            })
+            with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+                audit_f.write(json.dumps({
+                    "timestamp": datetime.now().isoformat(),
+                    "question_originale": user_query,
+                    "language": current_lang,
+                    "requested_mode": answer_mode,
+                    "actual_mode": "direct_missing_document_scope",
+                    "direct_answer_scope": "specific_document",
+                    "direct_answer_document_id": st.session_state.direct_answer_document_id,
+                    "sources_count": 0,
+                }, ensure_ascii=False) + "\n")
+            st.stop()
+
     # 1. Reformulation de la question (extractive is standalone-only and opt-in).
     extractive_route = (
         answer_mode == "Direct answer"
@@ -918,6 +1015,9 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         })
     else:
         # 2. Recherche Hybride (Vectoriel + BM25 avec RRF), avec repli élargi automatique
+        retrieval_filter = chroma_filter
+        if extractive_route and direct_scope == "specific_document" and direct_document is not None:
+            retrieval_filter = build_direct_document_filter(chroma_filter, direct_document)
         filtered_chunks, filtered_metas, relaxed_chunks, relaxed_metas, was_relaxed = hybrid_search(
             query=standalone_query,
             collection=collection,
@@ -925,7 +1025,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             bm25=bm25_index,
             docs=bm25_docs,
             metadatas=bm25_metas,
-            chroma_filter=chroma_filter,
+            chroma_filter=retrieval_filter,
             top_k=15
         )
 
@@ -998,6 +1098,10 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     full_stream_response = extractive_result.answer_text
                     with st.chat_message("assistant"):
                         st.caption("Réponse extraite des passages sources")
+                        if direct_scope == "specific_document" and direct_document is not None:
+                            st.caption(f"Document scope: {direct_document.get('source_file', '')}")
+                        elif direct_scope == "all_documents_experimental":
+                            st.caption("Document scope: All documents — experimental")
                         st.markdown(full_stream_response)
                         with st.expander(" Ressources consultées"):
                             for i_src, src in enumerate(display_sources):
@@ -1033,6 +1137,10 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "extractive_evidence_ids": list(extractive_result.evidence_ids),
                         "extractive_source_ids": list(extractive_result.source_ids),
                         "extractive_passage_hashes": list(extractive_result.passage_hashes),
+                        "direct_answer_scope": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
+                        "direct_answer_document_id": direct_document_identity(direct_document) if direct_document is not None else None,
+                        "direct_answer_source_file": direct_document.get("source_file") if direct_document is not None else None,
+                        "retrieval_mode": "hybrid",
                     }
                     with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
                         audit_f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
@@ -1054,6 +1162,10 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 )
                 with st.chat_message("assistant"):
                     st.caption("Mode : réponse directe")
+                    if direct_scope == "specific_document" and direct_document is not None:
+                        st.caption(f"Document scope: {direct_document.get('source_file', '')}")
+                    elif direct_scope == "all_documents_experimental":
+                        st.caption("Document scope: All documents â€” experimental")
                     st.markdown(direct_response)
                 st.session_state.messages.append({"role": "user", "content": user_query})
                 st.session_state.messages.append({
@@ -1076,6 +1188,10 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                             else "NO_EXPLICIT_EVIDENCE"
                         ),
                         "sources_count": 0,
+                        "direct_answer_scope": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
+                        "direct_answer_document_id": direct_document_identity(direct_document) if direct_document is not None else None,
+                        "direct_answer_source_file": direct_document.get("source_file") if direct_document is not None else None,
+                        "retrieval_mode": "hybrid",
                     }, ensure_ascii=False) + "\n")
                 st.stop()
 

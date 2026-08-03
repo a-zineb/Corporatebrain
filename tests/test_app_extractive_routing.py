@@ -19,6 +19,8 @@ def _load_helpers():
         "direct_unsuitable_message",
         "is_direct_sensitive_request",
         "direct_sensitive_message",
+        "direct_document_identity",
+        "build_direct_document_filter",
         "detect_catalog_intent",
         "detect_catalog_continuation",
         "normalize_catalog_text",
@@ -117,6 +119,26 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         message = helpers["direct_sensitive_message"]
         self.assertIn("passwords", message("English"))
         self.assertIn("mots de passe", message("French"))
+
+    def test_document_scope_prefers_hash_and_combines_active_filters(self):
+        helpers = _load_helpers()
+        identity = helpers["direct_document_identity"]
+        build_filter = helpers["build_direct_document_filter"]
+        metadata = {"file_hash": "abc123", "source_file": "cafeteria.pdf"}
+        self.assertEqual(identity(metadata), "abc123")
+        self.assertEqual(identity({"source_file": "fallback.pdf"}), "fallback.pdf")
+        self.assertEqual(
+            build_filter({"$and": [{"application": "MZ"}, {"geographical_entity": "OCM"}]}, metadata),
+            {"$and": [{"application": "MZ"}, {"geographical_entity": "OCM"}, {"file_hash": "abc123"}]},
+        )
+
+    def test_document_scope_guards_and_audit_contract_are_present(self):
+        self.assertIn('"specific_document", "all_documents_experimental"', APP_SOURCE)
+        self.assertIn('st.session_state.direct_answer_document_id', APP_SOURCE)
+        self.assertIn('"actual_mode": "direct_missing_document_scope"', APP_SOURCE)
+        self.assertIn('"direct_answer_document_id"', APP_SOURCE)
+        self.assertIn('"direct_answer_source_file"', APP_SOURCE)
+        self.assertIn('"retrieval_mode": "hybrid"', APP_SOURCE)
 
     def test_sensitive_guard_precedes_all_model_and_retrieval_stages(self):
         guard_start = APP_SOURCE.index('if answer_mode == "Direct answer" and is_direct_sensitive_request(user_query):')
