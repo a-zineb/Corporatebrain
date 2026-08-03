@@ -956,8 +956,9 @@ class ExtractiveAnswerResult:
 _EVIDENCE_MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð", "�")
 _EVIDENCE_APOSTROPHE_VARIANTS = "'`´‘’‛ʼ＇"
 _EVIDENCE_STOPWORDS = {
-    "the", "and", "for", "what", "where", "which", "how", "many", "are", "is", "to",
-    "les", "des", "une", "quel", "quelle", "quels", "quelles", "combien", "ou", "est", "sont",
+    "the", "and", "for", "what", "where", "which", "how", "who", "when", "why", "many",
+    "are", "is", "do", "does", "did", "to", "les", "des", "une", "quel", "quelle", "quels",
+    "quelles", "combien", "ou", "est", "sont", "qui", "demande", "question",
 }
 
 
@@ -1009,13 +1010,39 @@ def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str
     matched_acronyms = query_acronyms & passage_acronyms
     matched.update(matched_acronyms)
     time_patterns = set(re.findall(r"\b\d{1,2}h\d{2}\b", passage, flags=re.IGNORECASE))
-    time_intent = any(term.startswith("heure") or term in {"ouverture", "horaire"} for term in query_terms)
+    time_intent = any(
+        term.startswith("heure") or term.startswith("horaire") or term == "ouverture"
+        for term in query_terms
+    )
     if time_intent and time_patterns:
-        matched.update(term for term in query_terms if term.startswith("heure") or term in {"ouverture", "horaire"})
+        matched.update(
+            term for term in query_terms
+            if term.startswith("heure") or term.startswith("horaire") or term == "ouverture"
+        )
         matched.update(f"time:{value}" for value in sorted(time_patterns))
     denominator = max(1, len(query_terms) + len(exact_values) + len(query_acronyms))
     score = (len(matched) + len(matched_values) + len(matched_acronyms)) / denominator
     return score, tuple(sorted(matched, key=lambda value: (value.casefold(), value)))
+
+
+def _classify_evidence_query(query: str) -> str:
+    """Classify whether a query requests one or multiple explicit facts."""
+
+    tokens = _normalize_evidence_text(query).split()
+    interrogatives = {
+        "qui", "who", "what", "which", "where", "when", "why", "how", "ou",
+        "quel", "quelle", "quels", "quelles", "combien",
+    }
+    interrogative_count = sum(token in interrogatives for token in tokens)
+    if interrogative_count >= 2:
+        return "multi_fact"
+    if any(token in {"and", "et"} for token in tokens):
+        token_set = set(tokens)
+        if ({"location", "hours"} <= token_set or {"location", "horaire"} <= token_set
+                or {"version", "date"} <= token_set
+                or {"filename", "directory"} <= token_set):
+            return "multi_fact"
+    return "single_fact"
 
 
 def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> EvidenceExtractionResult:
@@ -1036,16 +1063,19 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
             if score > 0 and matched_terms:
                 candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
     candidates.sort(key=lambda item: (-item[0], item[1], item[2], _normalize_evidence_text(item[4])))
-    selected: list[tuple[float, int, int, PromptSource, str, tuple[str, ...]]] = []
-    covered_terms: set[str] = set()
-    for candidate in candidates:
-        if len(selected) >= max(1, max_passages):
-            break
-        terms = set(candidate[5])
-        if selected and not terms.difference(covered_terms):
-            continue
-        selected.append(candidate)
-        covered_terms.update(terms)
+    if _classify_evidence_query(query) == "single_fact":
+        selected = candidates[:1]
+    else:
+        selected = []
+        covered_terms: set[str] = set()
+        for candidate in candidates:
+            if len(selected) >= max(1, max_passages):
+                break
+            terms = set(candidate[5])
+            if selected and not terms.difference(covered_terms):
+                continue
+            selected.append(candidate)
+            covered_terms.update(terms)
     passages = tuple(
         EvidencePassage(f"E{index}", source.source_id, _evidence_source_hash(source), source.file_name, source.location, passage, sentence_index, round(score, 8), matched_terms)
         for index, (score, _source_id, sentence_index, source, passage, matched_terms) in enumerate(selected, 1)

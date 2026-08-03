@@ -245,6 +245,73 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(result.supporting_source_ids, (3,))
         self.assertTrue(any("time:12h00" in passage.matched_terms for passage in result.passages))
 
+    def test_generic_interrogatives_do_not_add_unrelated_passages(self):
+        sources = (
+            rag_pipeline.PromptSource(
+                1, "testcorporatebrain.pdf", "Page 1",
+                "Politique VPN Les employés demandant un accès VPN doivent obtenir l'approbation de leur manager avant de contacter le département IT.",
+                "testcorporatebrain.pdf",
+            ),
+            rag_pipeline.PromptSource(
+                3, "tango.docx", "Corps du document",
+                "Collection input specification. Les fichiers sont collectés en clair.", "tango.docx",
+            ),
+        )
+        trace = rag_pipeline.PipelineTrace(
+            query="Qui approuve une demande VPN ?", rewritten_query="Qui approuve une demande VPN ?",
+            prompt=rag_pipeline.PromptResult("prompt", sources=sources, context=""),
+        )
+        result = rag_pipeline.extract_evidence(trace)
+        self.assertEqual(result.supporting_source_ids, (1,))
+        self.assertEqual(len(result.passages), 1)
+
+    def test_english_interrogatives_do_not_add_unrelated_passages(self):
+        sources = (
+            rag_pipeline.PromptSource(1, "policy.pdf", "Page 1", "VPN access requires manager approval.", "policy.pdf"),
+            rag_pipeline.PromptSource(2, "noise.pdf", "Page 1", "The service has several hours of operation.", "noise.pdf"),
+        )
+        trace = rag_pipeline.PipelineTrace(
+            query="Who approves VPN access?", rewritten_query="Who approves VPN access?",
+            prompt=rag_pipeline.PromptResult("prompt", sources=sources, context=""),
+        )
+        result = rag_pipeline.extract_evidence(trace)
+        self.assertEqual(result.supporting_source_ids, (1,))
+        self.assertEqual(len(result.passages), 1)
+
+    def test_single_fact_inzsmart_and_vpn_select_only_strongest_passage(self):
+        cases = (
+            ("Combien d'instances INZsmart sont déployées ?", "Pour le flux INZsmart, nous avons prévu 12 instances.", "security.pdf"),
+            ("Qui approuve une demande VPN ?", "Les employés demandant un accès VPN doivent obtenir l'approbation de leur manager.", "policy.pdf"),
+        )
+        for query, expected, unrelated_file in cases:
+            sources = (
+                rag_pipeline.PromptSource(1, "expected.pdf", "Page 1", expected, "expected.pdf"),
+                rag_pipeline.PromptSource(2, unrelated_file, "Page 2", "Question: who uses the service?", unrelated_file),
+            )
+            trace = rag_pipeline.PipelineTrace(
+                query=query, rewritten_query=query,
+                prompt=rag_pipeline.PromptResult("prompt", sources=sources, context=""),
+            )
+            result = rag_pipeline.extract_evidence(trace)
+            self.assertEqual(result.supporting_source_ids, (1,))
+            self.assertEqual(len(result.passages), 1)
+            self.assertEqual(result.passages[0].text, expected)
+
+    def test_query_level_fact_classification_is_conservative_and_stable(self):
+        self.assertEqual(rag_pipeline._classify_evidence_query("Qui approuve une demande VPN ?"), "single_fact")
+        self.assertEqual(rag_pipeline._classify_evidence_query("Où se situe la cafétéria et quels sont ses horaires ?"), "multi_fact")
+        self.assertEqual(rag_pipeline._classify_evidence_query("What documents mention VPN?"), "single_fact")
+
+    def test_repeated_selection_is_identical(self):
+        source = rag_pipeline.PromptSource(1, "policy.pdf", "Page 1", "VPN access requires manager approval.", "policy.pdf")
+        trace = rag_pipeline.PipelineTrace(
+            query="Who approves VPN access?", rewritten_query="Who approves VPN access?",
+            prompt=rag_pipeline.PromptResult("prompt", sources=(source,), context=""),
+        )
+        first = rag_pipeline.extract_evidence(trace).to_json()
+        second = rag_pipeline.extract_evidence(trace).to_json()
+        self.assertEqual(first, second)
+
     def test_shared_extractive_outputs_match_8645dc3_baseline(self):
         source = rag_pipeline.PromptSource(3, "local.pdf", "Page 1", "La cafétéria est ouverte de 12h00 à 14h30.", "local.pdf")
         trace = rag_pipeline.PipelineTrace(
