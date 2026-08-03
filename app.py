@@ -124,6 +124,8 @@ def is_direct_answer_suitable(query):
 def direct_unsuitable_message(language):
     if str(language or "").casefold() == "english":
         return "This question requires explanation or synthesis. Use \"AI answer\" mode for a generated response based on the documents."
+    if str(language or "").casefold() == "spanish":
+        return "Esta pregunta requiere una explicación o una síntesis. Utiliza el modo «AI answer» para obtener una respuesta generada a partir de los documentos."
     return "Cette question nécessite une explication ou une synthèse. Utilisez le mode « AI answer » pour obtenir une réponse générée à partir des documents."
 
 
@@ -142,6 +144,8 @@ def is_direct_sensitive_request(query):
 def direct_sensitive_message(language):
     if str(language or "").casefold() == "english":
         return "I can’t provide passwords, credentials, keys, tokens, or other authentication secrets."
+    if str(language or "").casefold() == "spanish":
+        return "No puedo proporcionar contraseñas, credenciales, claves, tokens u otros secretos de autenticación."
     return "Je ne peux pas fournir de mots de passe, identifiants, clés, jetons ou autres secrets d’authentification."
 
 
@@ -420,21 +424,42 @@ def resolve_direct_document(collection, active_filter, document_id):
 # ==========================================
 
 def detect_query_language(text, fallback_lang="French"):
-    text_lower = text.lower().strip()
+    import unicodedata as _unicodedata
+
+    normalized = _unicodedata.normalize("NFKD", str(text or "")).casefold()
+    text_lower = "".join(character for character in normalized if not _unicodedata.combining(character)).strip()
 
     en_keywords = {'what', 'how', 'why', 'who', 'where', 'when', 'is', 'are', 'the', 'this', 'that', 'can', 'you', 'explain', 'tell', 'me', 'show', 'list', 'details', 'about', 'english', 'mean', 'stand', 'eenglish'}
-    fr_keywords = {'que', 'quoi', 'comment', 'pourquoi', 'qui', 'où', 'quand', 'est', 'sont', 'le', 'la', 'les', 'ce', 'cette', 'peux', 'tu', 'expliquer', 'montre', 'donne', 'veut', 'dire'}
+    fr_keywords = {'que', 'quoi', 'comment', 'pourquoi', 'qui', 'ou', 'quand', 'est', 'sont', 'le', 'la', 'les', 'ce', 'cette', 'peux', 'tu', 'expliquer', 'montre', 'donne', 'veut', 'dire', 'quel', 'quelle', 'quels', 'quelles', 'combien', 'horaires', 'duree', 'age', 'instances'}
 
     words = set(re.findall(r'\b\w+\b', text_lower))
     en_score = len(words.intersection(en_keywords))
     fr_score = len(words.intersection(fr_keywords))
+    es_keywords = {'que', 'como', 'por', 'quien', 'donde', 'cuando', 'cuantas', 'cuantos', 'esta', 'estan', 'el', 'la', 'los', 'las', 'cuanto', 'dame', 'muestra'}
+    es_score = len(words.intersection(es_keywords))
 
-    if en_score > fr_score:
+    if es_score > en_score and es_score > fr_score:
+        return "Spanish"
+    elif en_score > fr_score:
         return "English"
     elif fr_score > en_score:
         return "French"
-    else:
-        return fallback_lang
+    return fallback_lang
+
+
+def direct_answer_label(language):
+    return {"English": "Answer", "Spanish": "Respuesta"}.get(language, "Réponse")
+
+
+def direct_source_label(language):
+    return {"English": "Source passage", "Spanish": "Pasaje fuente"}.get(language, "Passage source")
+
+
+def direct_clarification_message(language):
+    return {
+        "English": "Could you clarify the application, document, or context you mean?",
+        "Spanish": "¿Podrías precisar la aplicación, el documento o el contexto?",
+    }.get(language, "Pouvez-vous préciser l'application, le document ou le contexte concerné ?")
 
 def contextualize_query(user_query, chat_history, model_name):
     return rag_pipeline.rewrite_query(
@@ -759,10 +784,10 @@ if "messages" not in st.session_state:
 for message_index, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
-            st.caption(f"Mode : {msg.get('actual_mode', msg.get('answer_mode', 'generative'))}")
+            st.caption(f"Mode : {msg.get('actual_mode', msg.get('answer_mode', 'generative'))} · {msg.get('language', 'French')}")
         st.markdown(msg["content"])
         if "sources" in msg and msg["sources"]:
-            with st.expander(" Ressources consultées"):
+            with st.expander(direct_source_label(msg.get("language", "French"))):
                 unique_sources = {}
                 for src in msg["sources"]:
                     if src["path"] not in unique_sources:
@@ -842,7 +867,7 @@ st.caption(
 
 if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
 
-    current_lang = detect_query_language(user_query, fallback_lang=st.session_state.last_lang)
+    current_lang = detect_query_language(user_query, fallback_lang="French")
     st.session_state.last_lang = current_lang
 
     with st.chat_message("user"):
@@ -899,10 +924,11 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         args=(os.path.abspath(os.path.join(STORAGE_DIR, filename)),),
                         key=f"chat_catalog_file_{len(st.session_state.messages)}_{index}",
                     )
-        st.session_state.messages.append({"role": "user", "content": user_query})
+        st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
         st.session_state.messages.append({
             "role": "assistant",
             "content": catalog_text,
+            "language": current_lang,
             "actual_mode": "catalog",
             "sources": [],
             "catalog_refinements": catalog_refinements,
@@ -923,9 +949,9 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         with st.chat_message("assistant"):
             st.caption("Mode : direct_sensitive_request")
             st.warning(sensitive_message)
-        st.session_state.messages.append({"role": "user", "content": user_query})
+        st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
         st.session_state.messages.append({
-            "role": "assistant", "content": sensitive_message,
+            "role": "assistant", "content": sensitive_message, "language": current_lang,
             "actual_mode": "direct_sensitive_request", "answer_mode": "direct_sensitive_request", "sources": [],
         })
         with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
@@ -945,9 +971,9 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         with st.chat_message("assistant"):
             st.caption("Mode : direct_unsuitable")
             st.info(direct_message)
-        st.session_state.messages.append({"role": "user", "content": user_query})
+        st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
         st.session_state.messages.append({
-            "role": "assistant", "content": direct_message,
+            "role": "assistant", "content": direct_message, "language": current_lang,
             "actual_mode": "direct_unsuitable", "answer_mode": "direct_unsuitable", "sources": [],
         })
         with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
@@ -968,17 +994,16 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             collection, chroma_filter, st.session_state.direct_answer_document_id
         )
         if direct_document is None:
-            missing_scope_message = (
-                "Sélectionnez un document valide dans le périmètre des filtres actifs avant d'utiliser Direct answer."
-                if current_lang != "English"
-                else "Select a valid document within the active filter scope before using Direct answer."
-            )
+            missing_scope_message = {
+                "English": "Select a valid document within the active filter scope before using Direct answer.",
+                "Spanish": "Selecciona un documento válido dentro del ámbito de filtros activos antes de usar Direct answer.",
+            }.get(current_lang, "Sélectionnez un document valide dans le périmètre des filtres actifs avant d'utiliser Direct answer.")
             with st.chat_message("assistant"):
                 st.caption("Mode : direct_missing_document_scope")
                 st.info(missing_scope_message)
-            st.session_state.messages.append({"role": "user", "content": user_query})
+            st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
             st.session_state.messages.append({
-                "role": "assistant", "content": missing_scope_message,
+                "role": "assistant", "content": missing_scope_message, "language": current_lang,
                 "actual_mode": "direct_missing_document_scope", "sources": [],
             })
             with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
@@ -1011,7 +1036,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             st.warning(no_docs)
         st.session_state.messages.append({"role": "user", "content": user_query})
         st.session_state.messages.append({
-            "role": "assistant", "content": no_docs, "actual_mode": "generative",
+            "role": "assistant", "content": no_docs, "language": current_lang, "actual_mode": "generative",
         })
     else:
         # 2. Recherche Hybride (Vectoriel + BM25 avec RRF), avec repli élargi automatique
@@ -1050,7 +1075,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 st.markdown(no_match_msg)
             st.session_state.messages.append({"role": "user", "content": user_query})
             st.session_state.messages.append({
-                "role": "assistant", "content": no_match_msg, "actual_mode": "generative",
+                "role": "assistant", "content": no_match_msg, "language": current_lang, "actual_mode": "generative",
             })
         else:
             if extractive_route:
@@ -1097,13 +1122,14 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     ]
                     full_stream_response = extractive_result.answer_text
                     with st.chat_message("assistant"):
-                        st.caption("Réponse extraite des passages sources")
+                        st.caption(direct_answer_label(current_lang))
+                        st.caption(direct_source_label(current_lang))
                         if direct_scope == "specific_document" and direct_document is not None:
                             st.caption(f"Document scope: {direct_document.get('source_file', '')}")
                         elif direct_scope == "all_documents_experimental":
                             st.caption("Document scope: All documents — experimental")
                         st.markdown(full_stream_response)
-                        with st.expander(" Ressources consultées"):
+                        with st.expander(direct_source_label(current_lang)):
                             for i_src, src in enumerate(display_sources):
                                 cols = st.columns([3, 1, 1])
                                 with cols[0]:
@@ -1144,10 +1170,11 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     }
                     with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
                         audit_f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
-                    st.session_state.messages.append({"role": "user", "content": user_query})
+                    st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": full_stream_response,
+                        "language": current_lang,
                         "sources": display_sources,
                         "answer_mode": "extractive",
                         "actual_mode": "extractive",
@@ -1158,19 +1185,20 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 direct_response = (
                     extractive_result.answer_text
                     if extractive_result is not None
-                    else rag_pipeline.build_clarification_message(current_lang)
+                    else direct_clarification_message(current_lang)
                 )
                 with st.chat_message("assistant"):
-                    st.caption("Mode : réponse directe")
+                    st.caption(direct_answer_label(current_lang))
                     if direct_scope == "specific_document" and direct_document is not None:
                         st.caption(f"Document scope: {direct_document.get('source_file', '')}")
                     elif direct_scope == "all_documents_experimental":
                         st.caption("Document scope: All documents â€” experimental")
                     st.markdown(direct_response)
-                st.session_state.messages.append({"role": "user", "content": user_query})
+                st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": direct_response,
+                    "language": current_lang,
                     "actual_mode": "extractive",
                     "sources": [],
                 })
@@ -1277,10 +1305,11 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
                         audit_f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
 
-                    st.session_state.messages.append({"role": "user", "content": user_query})
+                    st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": full_stream_response,
+                        "language": current_lang,
                         "sources": display_sources,
                         "actual_mode": "generative",
                     })

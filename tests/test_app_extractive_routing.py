@@ -19,6 +19,10 @@ def _load_helpers():
         "direct_unsuitable_message",
         "is_direct_sensitive_request",
         "direct_sensitive_message",
+        "detect_query_language",
+        "direct_answer_label",
+        "direct_source_label",
+        "direct_clarification_message",
         "direct_document_identity",
         "build_direct_document_filter",
         "detect_catalog_intent",
@@ -92,6 +96,40 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertIn("AI answer", message("French"))
         self.assertIn("This question requires", message("English"))
         self.assertIn("AI answer", message("English"))
+        self.assertIn("Esta pregunta requiere", message("Spanish"))
+
+    def test_language_detection_uses_each_query_not_previous_language(self):
+        helpers = _load_helpers()
+        detect = helpers["detect_query_language"]
+        self.assertEqual(detect("Combien d'instances INZsmart sont deployees ?", fallback_lang="English"), "French")
+        self.assertEqual(detect("How many INZsmart instances are deployed?", fallback_lang="French"), "English")
+        self.assertEqual(detect("Quels sont les horaires de la cafeteria ?", fallback_lang="English"), "French")
+        self.assertEqual(detect("When is the cafeteria open?", fallback_lang="French"), "English")
+        self.assertEqual(detect("¿Cuántas instancias de INZsmart están desplegadas?", fallback_lang="French"), "Spanish")
+
+    def test_language_specific_labels_and_clarification(self):
+        helpers = _load_helpers()
+        self.assertEqual(helpers["direct_answer_label"]("French"), "Réponse")
+        self.assertEqual(helpers["direct_answer_label"]("English"), "Answer")
+        self.assertEqual(helpers["direct_answer_label"]("Spanish"), "Respuesta")
+        self.assertEqual(helpers["direct_source_label"]("French"), "Passage source")
+        self.assertEqual(helpers["direct_source_label"]("English"), "Source passage")
+        self.assertEqual(helpers["direct_source_label"]("Spanish"), "Pasaje fuente")
+        self.assertIn("préciser", helpers["direct_clarification_message"]("French"))
+        self.assertIn("clarify", helpers["direct_clarification_message"]("English"))
+
+    def test_language_is_stored_and_history_rendering_is_backward_compatible(self):
+        self.assertIn('"language": current_lang', APP_SOURCE)
+        self.assertIn('msg.get("language", "French")', APP_SOURCE)
+        self.assertIn('detect_query_language(user_query, fallback_lang="French")', APP_SOURCE)
+        self.assertNotIn("detect_query_language(user_query, fallback_lang=st.session_state.last_lang)", APP_SOURCE)
+
+    def test_direct_source_text_is_not_translated(self):
+        start = APP_SOURCE.index("extractive_result = rag_pipeline.build_extractive_answer")
+        end = APP_SOURCE.index("st.stop()", start)
+        block = APP_SOURCE[start:end]
+        self.assertIn("full_stream_response = extractive_result.answer_text", block)
+        self.assertNotIn("translate", block.casefold())
 
     def test_unsuitable_direct_route_stops_before_retrieval_and_preserves_mode(self):
         self.assertIn('answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query)', APP_SOURCE)
