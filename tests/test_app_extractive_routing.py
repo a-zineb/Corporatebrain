@@ -140,6 +140,16 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertIn('"direct_answer_source_file"', APP_SOURCE)
         self.assertIn('"retrieval_mode": "hybrid"', APP_SOURCE)
 
+    def test_history_buttons_use_explicit_unique_indices_and_actions(self):
+        history_start = APP_SOURCE.index("for message_index, msg in enumerate(st.session_state.messages):")
+        history_end = APP_SOURCE.index('if "answer_mode" not in st.session_state:', history_start)
+        history = APP_SOURCE[history_start:history_end]
+        self.assertNotIn("st.session_state.messages.index(msg)", history)
+        self.assertIn("for source_index, src in enumerate", history)
+        self.assertIn('key=f"hist_file_{message_index}_{source_index}"', history)
+        self.assertIn('key=f"hist_folder_{message_index}_{source_index}"', history)
+        self.assertNotEqual("hist_file", "hist_folder")
+
     def test_sensitive_guard_precedes_all_model_and_retrieval_stages(self):
         guard_start = APP_SOURCE.index('if answer_mode == "Direct answer" and is_direct_sensitive_request(user_query):')
         guard_end = APP_SOURCE.index('if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query):', guard_start)

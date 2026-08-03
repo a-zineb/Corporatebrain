@@ -756,7 +756,7 @@ st.markdown("*RAG Optimisé : Discussion, pistes proches & extrait direct*")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for msg in st.session_state.messages:
+for message_index, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             st.caption(f"Mode : {msg.get('actual_mode', msg.get('answer_mode', 'generative'))}")
@@ -768,16 +768,16 @@ for msg in st.session_state.messages:
                     if src["path"] not in unique_sources:
                         unique_sources[src["path"]] = src
 
-                for i_src, src in enumerate(unique_sources.values()):
+                for source_index, src in enumerate(unique_sources.values()):
                     cols = st.columns([3, 1, 1])
                     with cols[0]:
                         label = " (piste proche, hors filtre)" if src.get("relaxed") else ""
                         st.write(f" **Fichier**: {src['file']}{label}")
                     with cols[1]:
-                        st.button(" Fichier", on_click=open_local_file, args=(src.get("path", ""),), key=f"hist_btn_{st.session_state.messages.index(msg)}_{i_src}_f")
+                        st.button(" Fichier", on_click=open_local_file, args=(src.get("path", ""),), key=f"hist_file_{message_index}_{source_index}")
                     with cols[2]:
                         folder_path = os.path.dirname(src.get("path", "")) if src.get("path") else ""
-                        st.button(" Dossier", on_click=open_local_file, args=(folder_path,), key=f"hist_btn_{st.session_state.messages.index(msg)}_{i_src}_d")
+                        st.button(" Dossier", on_click=open_local_file, args=(folder_path,), key=f"hist_folder_{message_index}_{source_index}")
 
 if "answer_mode" not in st.session_state:
     st.session_state.answer_mode = "AI answer"
