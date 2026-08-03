@@ -93,6 +93,13 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         ):
             self.assertFalse(suitable(query), query)
 
+    def test_inverted_french_factual_forms_remain_suitable(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        self.assertTrue(suitable("INZsmart comporte combien d'instances ?"))
+        self.assertTrue(suitable("À quel étage se trouve la cafétéria ?"))
+        self.assertFalse(suitable("Pourquoi INZsmart comporte-t-il plusieurs instances ?"))
+        self.assertFalse(suitable("Explique pourquoi la cafétéria se trouve à cet étage."))
+
     def test_unsuitable_direct_answer_message_is_language_specific(self):
         message = _load_helpers()["direct_unsuitable_message"]
         self.assertIn("Cette question nécessite", message("French"))
@@ -160,6 +167,27 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         message = helpers["direct_sensitive_message"]
         self.assertIn("passwords", message("English"))
         self.assertIn("mots de passe", message("French"))
+
+    def test_personal_identifier_requests_are_sensitive_but_generic_numbers_are_not(self):
+        detect = _load_helpers()["is_direct_sensitive_request"]
+        for query in (
+            "What is my social-security number?",
+            "What is my national identification number?",
+            "What is my identity-card number?",
+            "What is my personal identification number?",
+            "Quel est mon numéro de sécurité sociale ?",
+            "Quel est mon CIN ?",
+            "Quel est mon identifiant national ?",
+            "¿Cuál es mi número de seguridad social?",
+            "¿Cuál es mi número nacional de identificación?",
+        ):
+            self.assertTrue(detect(query), query)
+        for query in (
+            "What is the MBF record number?",
+            "Which parameter number controls duplicate detection?",
+            "What is the document version number?",
+        ):
+            self.assertFalse(detect(query), query)
 
     def test_document_scope_prefers_hash_and_combines_active_filters(self):
         helpers = _load_helpers()

@@ -100,6 +100,11 @@ def is_direct_answer_suitable(query):
         return False
     if re.search(r"\bhow\b", normalized) and "how many" not in normalized:
         return False
+    # Inverted factual French forms remain suitable for deterministic lookup.
+    if re.search(r"\b(?:comporte|contient|compte)\b.*\bcombien\b", normalized):
+        return True
+    if re.match(r"^a quel etage\b", normalized):
+        return True
     factual_prefix = re.match(
         r"^(who|where|when|which|what|how many|qui|ou|quand|quel|quelle|quels|quelles|combien)\b",
         normalized,
@@ -137,6 +142,14 @@ def is_direct_sensitive_request(query):
         "api key", "access key", "secret key", "token", "bearer", "jwt", "private key",
         "cle privee", "clé privée", "secret", "secrets", "authentication value",
         "authentication values", "valeur d authentification", "valeurs d authentification",
+        "social security number", "social security numbers", "numero de securite sociale",
+        "national identification number", "national identification numbers",
+        "numero national d identification", "identifiant national",
+        "identity card number", "identity card numbers", "numero de carte d identite",
+        "personal identification number", "personal identification numbers",
+        "numero d identification personnelle", "numero de identificacion personal",
+        "numero de seguridad social", "numero nacional de identificacion",
+        "numero de documento de identidad", "cin",
     )
     return any(marker in normalized for marker in markers)
 
