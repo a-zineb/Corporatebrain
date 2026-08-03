@@ -127,6 +127,24 @@ def direct_unsuitable_message(language):
     return "Cette question nécessite une explication ou une synthèse. Utilisez le mode « AI answer » pour obtenir une réponse générée à partir des documents."
 
 
+def is_direct_sensitive_request(query):
+    """Detect direct requests for credentials or other authentication secrets."""
+    normalized = normalize_catalog_text(query)
+    markers = (
+        "password", "passwd", "mot de passe", "credential", "credentials", "identifiant",
+        "api key", "access key", "secret key", "token", "bearer", "jwt", "private key",
+        "cle privee", "clé privée", "secret", "secrets", "authentication value",
+        "authentication values", "valeur d authentification", "valeurs d authentification",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def direct_sensitive_message(language):
+    if str(language or "").casefold() == "english":
+        return "I can’t provide passwords, credentials, keys, tokens, or other authentication secrets."
+    return "Je ne peux pas fournir de mots de passe, identifiants, clés, jetons ou autres secrets d’authentification."
+
+
 def detect_catalog_intent(query):
     """Recognize explicit requests for the indexed knowledge catalog."""
     lowered = normalize_catalog_text(query)
@@ -832,6 +850,28 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 "requested_mode": answer_mode,
                 "actual_mode": "catalog",
                 "sources_count": len(catalog_rows),
+            }, ensure_ascii=False) + "\n")
+        st.stop()
+
+    if answer_mode == "Direct answer" and is_direct_sensitive_request(user_query):
+        sensitive_message = direct_sensitive_message(current_lang)
+        with st.chat_message("assistant"):
+            st.caption("Mode : direct_sensitive_request")
+            st.warning(sensitive_message)
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        st.session_state.messages.append({
+            "role": "assistant", "content": sensitive_message,
+            "actual_mode": "direct_sensitive_request", "answer_mode": "direct_sensitive_request", "sources": [],
+        })
+        with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+            audit_f.write(json.dumps({
+                "timestamp": datetime.now().isoformat(),
+                "question_originale": user_query,
+                "language": current_lang,
+                "requested_mode": answer_mode,
+                "actual_mode": "direct_sensitive_request",
+                "direct_status": "direct_sensitive_request",
+                "sources_count": 0,
             }, ensure_ascii=False) + "\n")
         st.stop()
 

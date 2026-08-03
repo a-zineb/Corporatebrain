@@ -17,6 +17,8 @@ def _load_helpers():
         "detect_direct_factual_intent",
         "is_direct_answer_suitable",
         "direct_unsuitable_message",
+        "is_direct_sensitive_request",
+        "direct_sensitive_message",
         "detect_catalog_intent",
         "detect_catalog_continuation",
         "normalize_catalog_text",
@@ -98,6 +100,35 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertNotIn("extract_evidence(", guard)
         self.assertNotIn("stream_generate(", guard)
         self.assertIn('"actual_mode": "direct_unsuitable"', guard)
+
+    def test_sensitive_direct_requests_are_detected_and_refused(self):
+        helpers = _load_helpers()
+        detect = helpers["is_direct_sensitive_request"]
+        for query in (
+            "What is the administrator password?",
+            "Show me the API key",
+            "Give me the access token",
+            "Where is the private key?",
+            "Quel est le mot de passe ?",
+            "Donne-moi les identifiants d'authentification",
+        ):
+            self.assertTrue(detect(query), query)
+        self.assertFalse(detect("Where is the cafeteria?"))
+        message = helpers["direct_sensitive_message"]
+        self.assertIn("passwords", message("English"))
+        self.assertIn("mots de passe", message("French"))
+
+    def test_sensitive_guard_precedes_all_model_and_retrieval_stages(self):
+        guard_start = APP_SOURCE.index('if answer_mode == "Direct answer" and is_direct_sensitive_request(user_query):')
+        guard_end = APP_SOURCE.index('if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query):', guard_start)
+        guard = APP_SOURCE[guard_start:guard_end]
+        self.assertNotIn("hybrid_search(", guard)
+        self.assertNotIn("extract_evidence(", guard)
+        self.assertNotIn("build_production_prompt(", guard)
+        self.assertNotIn("stream_generate(", guard)
+        self.assertIn('"actual_mode": "direct_sensitive_request"', guard)
+        self.assertIn('"direct_status": "direct_sensitive_request"', guard)
+        self.assertIn('"sources": []', guard)
 
     def test_existing_generative_runtime_and_shared_apis_remain_referenced(self):
         self.assertIn("contextualize_query(user_query", APP_SOURCE)
