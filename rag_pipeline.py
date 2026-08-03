@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import os
+from pathlib import Path
 import re
 import time
 import unicodedata
@@ -53,6 +54,7 @@ __all__ = [
     "EvidenceExtractionResult",
     "ExtractiveAnswerResult",
     "EmbeddingEncoder",
+    "EmbeddingModelLoadError",
     "VectorStore",
     "TextGenerator",
     "PipelineRuntime",
@@ -74,6 +76,8 @@ __all__ = [
     "deduplicate_sources_by_path",
     "extract_evidence",
     "build_extractive_answer",
+    "resolve_embedding_snapshot",
+    "load_embedding_model_offline",
 ]
 
 
@@ -113,6 +117,70 @@ class RAGConfig:
     min_results_before_relax: int = 3
     rewrite_temperature: float = 0.0
     generation_temperature: float = 0.2
+
+
+class EmbeddingModelLoadError(RuntimeError):
+    """Raised when the certified embedding model is unavailable offline."""
+
+
+def resolve_embedding_snapshot(model_name: str, cache_root: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve a locally cached Hugging Face snapshot without network access."""
+    root = Path(cache_root) if cache_root else Path(
+        os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface")
+    )
+    hub_root = root / "hub"
+    repository = model_name if "/" in model_name else f"sentence-transformers/{model_name}"
+    model_dir = hub_root / f"models--{repository.replace('/', '--')}"
+    refs_main = model_dir / "refs" / "main"
+    revision = refs_main.read_text(encoding="utf-8").strip() if refs_main.is_file() else ""
+    snapshots = model_dir / "snapshots"
+    snapshot = snapshots / revision if revision else None
+    if snapshot is None or not snapshot.is_dir():
+        candidates = sorted((path for path in snapshots.glob("*") if path.is_dir()), reverse=True)
+        snapshot = candidates[0] if candidates else None
+    required = ("config.json", "modules.json", "tokenizer.json")
+    if snapshot is None or any(not (snapshot / name).is_file() for name in required):
+        raise EmbeddingModelLoadError(
+            f"Cached embedding snapshot missing for '{model_name}'. "
+            "Expected a complete local Hugging Face snapshot."
+        )
+    if not any((snapshot / name).is_file() for name in ("model.safetensors", "pytorch_model.bin")):
+        raise EmbeddingModelLoadError(
+            f"Cached embedding weights missing for '{model_name}'."
+        )
+    return snapshot
+
+
+def load_embedding_model_offline(config: RAGConfig):
+    """Load the certified embedding model from its local snapshot only."""
+    snapshot = resolve_embedding_snapshot(config.embedding_model_name)
+    previous = {
+        key: os.environ.get(key)
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    }
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    try:
+        from sentence_transformers import SentenceTransformer
+        try:
+            model = SentenceTransformer(str(snapshot), local_files_only=True)
+            dimension = model.get_sentence_embedding_dimension()
+        except Exception as error:
+            raise EmbeddingModelLoadError(
+                f"Unable to load cached embedding model '{config.embedding_model_name}' offline."
+            ) from error
+        if dimension != 384:
+            raise EmbeddingModelLoadError(
+                f"Embedding dimension mismatch for '{config.embedding_model_name}': "
+                f"expected 384, got {dimension}."
+            )
+        return model
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @dataclass(frozen=True, slots=True)

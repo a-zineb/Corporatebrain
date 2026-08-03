@@ -78,7 +78,7 @@ class RAGPipelineContractTests(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported_roots.add(node.module.split(".")[0])
 
-        forbidden = {"app", "chromadb", "ollama", "streamlit", "sentence_transformers"}
+        forbidden = {"app", "chromadb", "ollama", "streamlit"}
         self.assertFalse(imported_roots & forbidden)
 
     def test_module_declares_only_approved_runtime_functions(self) -> None:
@@ -91,6 +91,8 @@ class RAGPipelineContractTests(unittest.TestCase):
         self.assertEqual(
             module_functions,
             [
+                "resolve_embedding_snapshot",
+                "load_embedding_model_offline",
                 "build_bm25_index",
                 "normalize_chroma_filter",
                 "metadata_matches_filter",

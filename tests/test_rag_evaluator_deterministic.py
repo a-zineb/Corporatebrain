@@ -345,16 +345,20 @@ class DeterministicEvaluatorTests(unittest.TestCase):
 
     def test_offline_embedding_loader_uses_cached_production_model(self):
         cached_model = object()
-        with patch("rag_evaluator.SentenceTransformer", return_value=cached_model) as loader:
+        with patch("rag_pipeline.load_embedding_model_offline", return_value=cached_model) as loader:
             self.assertIs(
                 rag_evaluator.load_offline_embedding_model("paraphrase-multilingual-MiniLM-L12-v2"),
                 cached_model,
             )
-        loader.assert_called_once_with("paraphrase-multilingual-MiniLM-L12-v2", local_files_only=True)
+        loader.assert_called_once()
+        self.assertEqual(
+            loader.call_args.args[0].embedding_model_name,
+            "paraphrase-multilingual-MiniLM-L12-v2",
+        )
 
     def test_offline_embedding_loader_fails_clearly_when_cache_is_missing(self):
-        with patch("rag_evaluator.SentenceTransformer", side_effect=OSError("missing cache")):
-            with self.assertRaisesRegex(RuntimeError, "Offline evaluation requires cached embedding model"):
+        with patch("rag_pipeline.load_embedding_model_offline", side_effect=RuntimeError("missing cache")):
+            with self.assertRaisesRegex(RuntimeError, "missing cache"):
                 rag_evaluator.load_offline_embedding_model("paraphrase-multilingual-MiniLM-L12-v2")
 
     def test_evaluator_uses_shared_filter_normalization_for_multi_field_cases(self):

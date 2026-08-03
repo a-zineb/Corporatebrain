@@ -11,7 +11,6 @@ from datetime import datetime
 import pandas as pd
 import docx
 import fitz  # PyMuPDF
-from sentence_transformers import SentenceTransformer
 import ollama
 import docx2txt
 import olefile
@@ -244,8 +243,12 @@ def load_backend():
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     collection = client.get_or_create_collection(COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
 
-    # Fast multilingual model
-    embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    embedding_model = rag_pipeline.load_embedding_model_offline(
+        rag_pipeline.RAGConfig(
+            chroma_path=CHROMA_PATH,
+            collection_name=COLLECTION_NAME,
+        )
+    )
 
     return client, collection, embedding_model
 

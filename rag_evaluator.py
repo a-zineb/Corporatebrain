@@ -20,7 +20,6 @@ import unicodedata
 
 import chromadb
 import ollama
-from sentence_transformers import SentenceTransformer
 
 import rag_forensics
 import rag_judge
@@ -296,16 +295,11 @@ def load_runtime(config: rag_pipeline.RAGConfig, *, stage_timeout_seconds: float
     return EvaluationRuntime(collection, embedding_model, bm25, documents, metadatas, config)
 
 
-def load_offline_embedding_model(model_name: str) -> SentenceTransformer:
-    """Load the production embedding model from local cache without network access."""
-
-    try:
-        return SentenceTransformer(model_name, local_files_only=True)
-    except Exception as error:
-        raise RuntimeError(
-            f"Offline evaluation requires cached embedding model '{model_name}'. "
-            "No model download was attempted."
-        ) from error
+def load_offline_embedding_model(model_name: str):
+    """Compatibility wrapper around the shared certified offline loader."""
+    return rag_pipeline.load_embedding_model_offline(
+        rag_pipeline.RAGConfig(embedding_model_name=model_name)
+    )
 
 
 def language_label(language: str) -> str:
