@@ -463,6 +463,11 @@ def direct_scope_selection_consistent(selected_scope, session_scope):
     return selected_scope == session_scope
 
 
+def experimental_global_direct_answer_enabled():
+    """Expose global Direct Answer scope only when explicitly enabled."""
+    return os.getenv("ENABLE_EXPERIMENTAL_GLOBAL_DIRECT_ANSWER", "").strip().casefold() == "true"
+
+
 def resolve_direct_document(collection, active_filter, document_id):
     """Resolve and validate a selected document inside the active filter scope."""
     if not document_id:
@@ -875,11 +880,16 @@ answer_mode = st.selectbox(
 )
 if "direct_answer_document_id" not in st.session_state:
     st.session_state.direct_answer_document_id = None
-direct_scope = "all_documents_experimental"
+direct_scope = "specific_document"
 if answer_mode == "Direct answer":
+    scope_options = ["specific_document"]
+    if experimental_global_direct_answer_enabled():
+        scope_options.append("all_documents_experimental")
+    if st.session_state.get("direct_answer_scope") not in scope_options:
+        st.session_state.direct_answer_scope = "specific_document"
     direct_scope = st.selectbox(
         "Scope",
-        ["specific_document", "all_documents_experimental"],
+        scope_options,
         format_func=lambda value: (
             "Specific document" if value == "specific_document"
             else "All documents — experimental"
@@ -912,6 +922,13 @@ if answer_mode == "Direct answer":
         else:
             st.session_state.direct_answer_document_id = None
             st.info("Aucun document disponible dans le périmètre des filtres actifs.")
+        selected_metadata = next(
+            (metadata for metadata in direct_documents
+             if direct_document_identity(metadata) == st.session_state.direct_answer_document_id),
+            None,
+        )
+        if selected_metadata is not None:
+            st.caption(f"Selected document: {selected_metadata.get('source_file', '')}")
 st.caption(
     "Knowledge catalog : liste complète des documents. "
     "Direct answer : extraction déterministe. "
@@ -1291,7 +1308,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     if direct_scope == "specific_document" and direct_document is not None:
                         st.caption(f"Document scope: {direct_document.get('source_file', '')}")
                     elif direct_scope == "all_documents_experimental":
-                        st.caption("Document scope: All documents â€” experimental")
+                        st.caption("Document scope: All documents — experimental")
                     st.markdown(direct_response)
                 st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
                 st.session_state.messages.append({

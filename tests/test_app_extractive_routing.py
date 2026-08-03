@@ -28,6 +28,7 @@ def _load_helpers():
         "direct_filter_contains_identity",
         "direct_metadata_matches_identity",
         "direct_scope_selection_consistent",
+        "experimental_global_direct_answer_enabled",
         "detect_catalog_intent",
         "detect_catalog_continuation",
         "normalize_catalog_text",
@@ -202,12 +203,36 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         )
 
     def test_document_scope_guards_and_audit_contract_are_present(self):
-        self.assertIn('"specific_document", "all_documents_experimental"', APP_SOURCE)
+        self.assertIn('scope_options = ["specific_document"]', APP_SOURCE)
+        self.assertIn('scope_options.append("all_documents_experimental")', APP_SOURCE)
         self.assertIn('st.session_state.direct_answer_document_id', APP_SOURCE)
         self.assertIn('"actual_mode": "direct_invalid_document_scope"', APP_SOURCE)
         self.assertIn('"direct_answer_document_id"', APP_SOURCE)
         self.assertIn('"direct_answer_source_file"', APP_SOURCE)
         self.assertIn('"retrieval_mode": "hybrid"', APP_SOURCE)
+
+    def test_global_direct_scope_is_opt_in_and_disabled_scope_is_normalized(self):
+        helpers = _load_helpers()
+        original = os.environ.pop("ENABLE_EXPERIMENTAL_GLOBAL_DIRECT_ANSWER", None)
+        try:
+            self.assertFalse(helpers["experimental_global_direct_answer_enabled"]())
+            os.environ["ENABLE_EXPERIMENTAL_GLOBAL_DIRECT_ANSWER"] = "true"
+            self.assertTrue(helpers["experimental_global_direct_answer_enabled"]())
+            os.environ["ENABLE_EXPERIMENTAL_GLOBAL_DIRECT_ANSWER"] = "1"
+            self.assertFalse(helpers["experimental_global_direct_answer_enabled"]())
+        finally:
+            if original is None:
+                os.environ.pop("ENABLE_EXPERIMENTAL_GLOBAL_DIRECT_ANSWER", None)
+            else:
+                os.environ["ENABLE_EXPERIMENTAL_GLOBAL_DIRECT_ANSWER"] = original
+        self.assertIn('st.session_state.direct_answer_scope = "specific_document"', APP_SOURCE)
+        self.assertIn('st.session_state.get("direct_answer_scope") not in scope_options', APP_SOURCE)
+
+    def test_direct_ui_requires_specific_document_by_default_and_shows_selection(self):
+        ui = APP_SOURCE[APP_SOURCE.index('direct_scope = "specific_document"'):APP_SOURCE.index('st.caption(\n    "Knowledge catalog', APP_SOURCE.index('direct_scope = "specific_document"'))]
+        self.assertIn('scope_options = ["specific_document"]', ui)
+        self.assertNotIn('st.selectbox(\n        "Scope",\n        ["specific_document", "all_documents_experimental"]', ui)
+        self.assertIn('st.caption(f"Selected document:', ui)
 
     def test_direct_scope_identity_is_fail_closed(self):
         helpers = _load_helpers()
