@@ -25,6 +25,9 @@ def _load_helpers():
         "direct_clarification_message",
         "direct_document_identity",
         "build_direct_document_filter",
+        "direct_filter_contains_identity",
+        "direct_metadata_matches_identity",
+        "direct_scope_selection_consistent",
         "detect_catalog_intent",
         "detect_catalog_continuation",
         "normalize_catalog_text",
@@ -173,10 +176,42 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
     def test_document_scope_guards_and_audit_contract_are_present(self):
         self.assertIn('"specific_document", "all_documents_experimental"', APP_SOURCE)
         self.assertIn('st.session_state.direct_answer_document_id', APP_SOURCE)
-        self.assertIn('"actual_mode": "direct_missing_document_scope"', APP_SOURCE)
+        self.assertIn('"actual_mode": "direct_invalid_document_scope"', APP_SOURCE)
         self.assertIn('"direct_answer_document_id"', APP_SOURCE)
         self.assertIn('"direct_answer_source_file"', APP_SOURCE)
         self.assertIn('"retrieval_mode": "hybrid"', APP_SOURCE)
+
+    def test_direct_scope_identity_is_fail_closed(self):
+        helpers = _load_helpers()
+        selected = {"file_hash": "hash-1", "source_file": "selected.docx"}
+        self.assertTrue(helpers["direct_filter_contains_identity"]({"file_hash": "hash-1"}, selected))
+        self.assertTrue(helpers["direct_filter_contains_identity"](
+            {"$and": [{"application": "MZ"}, {"file_hash": "hash-1"}]}, selected
+        ))
+        self.assertFalse(helpers["direct_filter_contains_identity"]({"source_file": "selected.docx"}, selected))
+        self.assertTrue(helpers["direct_metadata_matches_identity"](
+            {"file_hash": "hash-1", "source_file": "selected.docx"}, selected
+        ))
+        self.assertFalse(helpers["direct_metadata_matches_identity"](
+            {"file_hash": "hash-2", "source_file": "other.docx"}, selected
+        ))
+        self.assertFalse(helpers["direct_scope_selection_consistent"]("specific_document", "all_documents_experimental"))
+
+    def test_scope_validation_precedes_direct_retrieval_and_generation(self):
+        guard_start = APP_SOURCE.index("if answer_mode == \"Direct answer\" and direct_scope == \"specific_document\":")
+        retrieval = APP_SOURCE.index("filtered_chunks, filtered_metas", guard_start)
+        guard = APP_SOURCE[guard_start:retrieval]
+        self.assertIn("direct_scope_selection_consistent", guard)
+        self.assertIn("direct_invalid_document_scope", guard)
+        self.assertIn("st.stop()", guard)
+
+    def test_scope_audit_contract_and_candidate_validation_are_present(self):
+        self.assertIn('"direct_answer_scope_requested"', APP_SOURCE)
+        self.assertIn('"direct_answer_scope_effective"', APP_SOURCE)
+        self.assertIn('"effective_chroma_filter"', APP_SOURCE)
+        self.assertIn('"scope_validation": "PASS"', APP_SOURCE)
+        self.assertIn("direct_metadata_matches_identity(metadata, direct_document)", APP_SOURCE)
+        self.assertIn("direct_filter_contains_identity(retrieval_filter, direct_document)", APP_SOURCE)
 
     def test_history_buttons_use_explicit_unique_indices_and_actions(self):
         history_start = APP_SOURCE.index("for message_index, msg in enumerate(st.session_state.messages):")

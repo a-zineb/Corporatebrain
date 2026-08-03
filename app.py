@@ -409,6 +409,47 @@ def build_direct_document_filter(active_filter, metadata):
     return {"$and": [active_filter, condition]}
 
 
+def direct_filter_contains_identity(chroma_filter, metadata):
+    """Return whether an effective filter pins retrieval to this document."""
+    key = "file_hash" if metadata.get("file_hash") else "source_file"
+    expected = metadata.get(key)
+    if not expected or not isinstance(chroma_filter, dict):
+        return False
+    conditions = chroma_filter.get("$and", [chroma_filter])
+    return any(
+        isinstance(condition, dict) and condition.get(key) == expected
+        for condition in conditions
+    )
+
+
+def direct_metadata_matches_identity(metadata, selected_metadata):
+    """Enforce the selected document identity on every returned chunk/source."""
+    if not isinstance(metadata, dict) or not isinstance(selected_metadata, dict):
+        return False
+    selected_hash = selected_metadata.get("file_hash")
+    if selected_hash:
+        return metadata.get("file_hash") == selected_hash
+    selected_file = selected_metadata.get("source_file")
+    return bool(selected_file) and metadata.get("source_file") == selected_file
+
+
+def direct_scope_audit_filter(chroma_filter):
+    """Serialize only sanitized metadata-filter structure for audit records."""
+    return json.dumps(chroma_filter, sort_keys=True, ensure_ascii=False)
+
+
+def direct_invalid_scope_message(language):
+    return {
+        "English": "Please reselect the document before using Direct answer.",
+        "Spanish": "Vuelve a seleccionar el documento antes de usar Direct answer.",
+    }.get(language, "Veuillez resélectionner le document avant d'utiliser Direct answer.")
+
+
+def direct_scope_selection_consistent(selected_scope, session_scope):
+    """Ensure the rendered selector and effective execution scope agree."""
+    return selected_scope == session_scope
+
+
 def resolve_direct_document(collection, active_filter, document_id):
     """Resolve and validate a selected document inside the active filter scope."""
     if not document_id:
@@ -993,18 +1034,20 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         direct_document = resolve_direct_document(
             collection, chroma_filter, st.session_state.direct_answer_document_id
         )
-        if direct_document is None:
-            missing_scope_message = {
-                "English": "Select a valid document within the active filter scope before using Direct answer.",
-                "Spanish": "Selecciona un documento válido dentro del ámbito de filtros activos antes de usar Direct answer.",
-            }.get(current_lang, "Sélectionnez un document valide dans le périmètre des filtres actifs avant d'utiliser Direct answer.")
+        if (
+            not direct_scope_selection_consistent(
+                direct_scope, st.session_state.get("direct_answer_scope", direct_scope)
+            )
+            or direct_document is None
+        ):
+            missing_scope_message = direct_invalid_scope_message(current_lang)
             with st.chat_message("assistant"):
-                st.caption("Mode : direct_missing_document_scope")
+                st.caption("Mode : direct_invalid_document_scope")
                 st.info(missing_scope_message)
             st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
             st.session_state.messages.append({
                 "role": "assistant", "content": missing_scope_message, "language": current_lang,
-                "actual_mode": "direct_missing_document_scope", "sources": [],
+                "actual_mode": "direct_invalid_document_scope", "sources": [],
             })
             with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
                 audit_f.write(json.dumps({
@@ -1012,9 +1055,14 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     "question_originale": user_query,
                     "language": current_lang,
                     "requested_mode": answer_mode,
-                    "actual_mode": "direct_missing_document_scope",
+                    "actual_mode": "direct_invalid_document_scope",
                     "direct_answer_scope": "specific_document",
+                    "direct_answer_scope_requested": "specific_document",
+                    "direct_answer_scope_effective": "specific_document",
                     "direct_answer_document_id": st.session_state.direct_answer_document_id,
+                    "direct_answer_source_file": direct_document.get("source_file") if direct_document else None,
+                    "effective_chroma_filter": direct_scope_audit_filter(chroma_filter),
+                    "scope_validation": "FAIL",
                     "sources_count": 0,
                 }, ensure_ascii=False) + "\n")
             st.stop()
@@ -1053,6 +1101,40 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             chroma_filter=retrieval_filter,
             top_k=15
         )
+
+        if extractive_route and direct_scope == "specific_document":
+            scope_candidates = list(filtered_metas) + list(relaxed_metas or [])
+            scope_valid = (
+                direct_document is not None
+                and direct_filter_contains_identity(retrieval_filter, direct_document)
+                and all(direct_metadata_matches_identity(metadata, direct_document) for metadata in scope_candidates)
+            )
+            if not scope_valid:
+                invalid_scope_message = direct_invalid_scope_message(current_lang)
+                with st.chat_message("assistant"):
+                    st.caption("Mode : direct_invalid_document_scope")
+                    st.info(invalid_scope_message)
+                st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
+                st.session_state.messages.append({
+                    "role": "assistant", "content": invalid_scope_message, "language": current_lang,
+                    "actual_mode": "direct_invalid_document_scope", "sources": [],
+                })
+                with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+                    audit_f.write(json.dumps({
+                        "timestamp": datetime.now().isoformat(),
+                        "question_originale": user_query,
+                        "language": current_lang,
+                        "requested_mode": answer_mode,
+                        "actual_mode": "direct_invalid_document_scope",
+                        "direct_answer_scope_requested": "specific_document",
+                        "direct_answer_scope_effective": "specific_document",
+                        "direct_answer_document_id": direct_document_identity(direct_document) if direct_document else None,
+                        "direct_answer_source_file": direct_document.get("source_file") if direct_document else None,
+                        "effective_chroma_filter": direct_scope_audit_filter(retrieval_filter),
+                        "scope_validation": "FAIL",
+                        "sources_count": 0,
+                    }, ensure_ascii=False) + "\n")
+                st.stop()
 
         source_metadata_list = rag_pipeline.build_source_list(
             filtered_chunks, filtered_metas, STORAGE_DIR, relaxed_flag=False
@@ -1167,6 +1249,10 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "direct_answer_document_id": direct_document_identity(direct_document) if direct_document is not None else None,
                         "direct_answer_source_file": direct_document.get("source_file") if direct_document is not None else None,
                         "retrieval_mode": "hybrid",
+                        "direct_answer_scope_requested": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
+                        "direct_answer_scope_effective": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
+                        "effective_chroma_filter": direct_scope_audit_filter(retrieval_filter),
+                        "scope_validation": "PASS" if direct_scope != "specific_document" or direct_document is not None else "FAIL",
                     }
                     with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
                         audit_f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
@@ -1220,6 +1306,10 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "direct_answer_document_id": direct_document_identity(direct_document) if direct_document is not None else None,
                         "direct_answer_source_file": direct_document.get("source_file") if direct_document is not None else None,
                         "retrieval_mode": "hybrid",
+                        "direct_answer_scope_requested": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
+                        "direct_answer_scope_effective": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
+                        "effective_chroma_filter": direct_scope_audit_filter(retrieval_filter),
+                        "scope_validation": "PASS" if direct_scope != "specific_document" or direct_document is not None else "FAIL",
                     }, ensure_ascii=False) + "\n")
                 st.stop()
 
