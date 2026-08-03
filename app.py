@@ -84,6 +84,49 @@ def detect_direct_factual_intent(query, has_history=False):
     return bool(re.match(prefix, lowered)) and len(re.findall(r"\b(?:and|et|or|ou)\b", lowered)) == 0
 
 
+def is_direct_answer_suitable(query):
+    """Return whether Direct answer can safely answer this query extractively."""
+    text = " ".join(str(query or "").split()).strip()
+    if not text or len(text) > 240:
+        return False
+    normalized = normalize_catalog_text(text)
+    unsuitable = (
+        "explain", "expliquer", "pourquoi", "why", "compare", "comparaison",
+        "difference", "differences", "resume", "summarize", "overview", "synthese",
+        "analyze", "analyse", "interpret", "interprete", "recommend", "recommand",
+        "workflow", "architecture", "broad", "how does", "how do", "comment fonctionne",
+    )
+    if any(marker in normalized for marker in unsuitable):
+        return False
+    if re.search(r"\bhow\b", normalized) and "how many" not in normalized:
+        return False
+    factual_prefix = re.match(
+        r"^(who|where|when|which|what|how many|qui|ou|quand|quel|quelle|quels|quelles|combien)\b",
+        normalized,
+    )
+    if not factual_prefix:
+        return False
+    conjunctions = re.findall(r"\b(?:and|et)\b", normalized)
+    if conjunctions:
+        interrogatives = re.findall(
+            r"\b(?:who|where|when|which|what|how many|qui|ou|quand|quel|quelle|quels|quelles|combien)\b",
+            normalized,
+        )
+        target_pair = (
+            ("location" in normalized or "situe" in normalized or "trouve" in normalized)
+            and ("hour" in normalized or "horaire" in normalized or "ouverture" in normalized)
+        )
+        if len(interrogatives) < 2 and not target_pair:
+            return False
+    return True
+
+
+def direct_unsuitable_message(language):
+    if str(language or "").casefold() == "english":
+        return "This question requires explanation or synthesis. Use \"AI answer\" mode for a generated response based on the documents."
+    return "Cette question nécessite une explication ou une synthèse. Utilisez le mode « AI answer » pour obtenir une réponse générée à partir des documents."
+
+
 def detect_catalog_intent(query):
     """Recognize explicit requests for the indexed knowledge catalog."""
     lowered = normalize_catalog_text(query)
@@ -789,6 +832,28 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 "requested_mode": answer_mode,
                 "actual_mode": "catalog",
                 "sources_count": len(catalog_rows),
+            }, ensure_ascii=False) + "\n")
+        st.stop()
+
+    if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query):
+        direct_message = direct_unsuitable_message(current_lang)
+        with st.chat_message("assistant"):
+            st.caption("Mode : direct_unsuitable")
+            st.info(direct_message)
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        st.session_state.messages.append({
+            "role": "assistant", "content": direct_message,
+            "actual_mode": "direct_unsuitable", "answer_mode": "direct_unsuitable", "sources": [],
+        })
+        with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+            audit_f.write(json.dumps({
+                "timestamp": datetime.now().isoformat(),
+                "question_originale": user_query,
+                "language": current_lang,
+                "requested_mode": answer_mode,
+                "actual_mode": "direct_unsuitable",
+                "direct_status": "UNSUITABLE_EXPLANATORY_OR_COMPARATIVE",
+                "sources_count": 0,
             }, ensure_ascii=False) + "\n")
         st.stop()
 

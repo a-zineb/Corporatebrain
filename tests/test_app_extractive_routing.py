@@ -15,6 +15,8 @@ def _load_helpers():
     names = {
         "extractive_answers_enabled",
         "detect_direct_factual_intent",
+        "is_direct_answer_suitable",
+        "direct_unsuitable_message",
         "detect_catalog_intent",
         "detect_catalog_continuation",
         "normalize_catalog_text",
@@ -61,6 +63,41 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         ):
             self.assertFalse(detect(query))
         self.assertFalse(detect("What is the location?", has_history=True))
+
+    def test_direct_answer_suitability_rejects_explanatory_and_comparative_queries(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        for query in (
+            "Combien d'instances INZsmart sont déployées ?",
+            "Où se trouve la cafétéria ?",
+            "Quels sont les horaires de la cafétéria ?",
+            "Qui approuve une demande VPN ?",
+            "Où se situe la cafétéria et quels sont ses horaires ?",
+        ):
+            self.assertTrue(suitable(query), query)
+        for query in (
+            "Explique le workflow CRBT.",
+            "Compare GGSN et P2P.",
+            "Résume l'architecture MediationZone.",
+            "Pourquoi utilise-t-on la vérification des doublons ?",
+        ):
+            self.assertFalse(suitable(query), query)
+
+    def test_unsuitable_direct_answer_message_is_language_specific(self):
+        message = _load_helpers()["direct_unsuitable_message"]
+        self.assertIn("Cette question nécessite", message("French"))
+        self.assertIn("AI answer", message("French"))
+        self.assertIn("This question requires", message("English"))
+        self.assertIn("AI answer", message("English"))
+
+    def test_unsuitable_direct_route_stops_before_retrieval_and_preserves_mode(self):
+        self.assertIn('answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query)', APP_SOURCE)
+        guard_start = APP_SOURCE.index('if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query):')
+        guard_end = APP_SOURCE.index("# 1. Reformulation", guard_start)
+        guard = APP_SOURCE[guard_start:guard_end]
+        self.assertNotIn("hybrid_search(", guard)
+        self.assertNotIn("extract_evidence(", guard)
+        self.assertNotIn("stream_generate(", guard)
+        self.assertIn('"actual_mode": "direct_unsuitable"', guard)
 
     def test_existing_generative_runtime_and_shared_apis_remain_referenced(self):
         self.assertIn("contextualize_query(user_query", APP_SOURCE)
