@@ -104,6 +104,34 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertFalse(suitable("Pourquoi INZsmart comporte-t-il plusieurs instances ?"))
         self.assertFalse(suitable("Explique pourquoi la cafétéria se trouve à cet étage."))
 
+    def test_concise_factual_request_patterns_are_suitable(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        for query in (
+            "Opening hours of the cafeteria?",
+            "Total INZsmart instances?",
+            "Nombre total d'instances INZsmart ?",
+            "What floor is the cafeteria on?",
+            "Avant de contacter le service IT, quelle approbation faut-il obtenir ?",
+            "Maximum SIMBOX cache duration?",
+            "What is the specification version?",
+            "¿Cuál es la duración máxima del caché SIMBOX?",
+        ):
+            self.assertTrue(suitable(query), query)
+
+    def test_explanatory_and_comparative_variants_remain_unsuitable(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        for query in (
+            "Explain the cafeteria opening hours policy.",
+            "Compare total INZsmart instances across versions.",
+            "Summarize the SIMBOX cache duration workflow.",
+            "Why is the cafeteria on that floor?",
+            "Explique les horaires de la cafétéria.",
+            "Compare le nombre total d'instances.",
+            "Résume la durée maximale du cache SIMBOX.",
+            "¿Por qué está la cafetería en ese piso?",
+        ):
+            self.assertFalse(suitable(query), query)
+
     def test_unsuitable_direct_answer_message_is_language_specific(self):
         message = _load_helpers()["direct_unsuitable_message"]
         self.assertIn("Cette question nécessite", message("French"))

@@ -91,7 +91,7 @@ def is_direct_answer_suitable(query):
         return False
     normalized = normalize_catalog_text(text)
     unsuitable = (
-        "explain", "expliquer", "pourquoi", "why", "compare", "comparaison",
+        "explain", "expliquer", "explique", "pourquoi", "por que", "porque", "why", "compare", "comparaison",
         "difference", "differences", "resume", "summarize", "overview", "synthese",
         "analyze", "analyse", "interpret", "interprete", "recommend", "recommand",
         "workflow", "architecture", "broad", "how does", "how do", "comment fonctionne",
@@ -100,6 +100,16 @@ def is_direct_answer_suitable(query):
         return False
     if re.search(r"\bhow\b", normalized) and "how many" not in normalized:
         return False
+    concise_factual_patterns = (
+        r"\b(?:total|number of|count|nombre total|numero de|combien)\b",
+        r"\b(?:what floor|which floor|located|where|ou|a quel etage|que piso)\b",
+        r"\b(?:opening hours|hours|when open|horaires|heure d ouverture|horario|horarios)\b",
+        r"\b(?:what approval|who approves|quelle approbation|que aprobacion|aprobacion)\b",
+        r"\b(?:maximum(?:\s+\w+){0,2}\s+duration|cache age|duree maximale|duracion maxima)\b",
+        r"\b(?:version|specification version|version de especificacion)\b",
+    )
+    if any(re.search(pattern, normalized) for pattern in concise_factual_patterns):
+        return True
     # Inverted factual French forms remain suitable for deterministic lookup.
     if re.search(r"\b(?:comporte|contient|compte)\b.*\bcombien\b", normalized):
         return True
