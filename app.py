@@ -514,11 +514,91 @@ def direct_source_label(language):
     return {"English": "Source passage", "Spanish": "Pasaje fuente"}.get(language, "Passage source")
 
 
+def direct_original_source_label(language):
+    return {
+        "English": "Original source passage",
+        "Spanish": "Pasaje fuente original",
+    }.get(language, "Passage source original")
+
+
 def direct_clarification_message(language):
     return {
         "English": "Could you clarify the application, document, or context you mean?",
         "Spanish": "¿Podrías precisar la aplicación, el documento o el contexto?",
     }.get(language, "Pouvez-vous préciser l'application, le document ou le contexte concerné ?")
+
+
+def build_direct_localized_summary(query, evidence, language):
+    """Build a conservative localized summary from explicit evidence values."""
+    if evidence is None or not getattr(evidence, "passages", ()):
+        return None
+    text = " ".join(passage.text for passage in evidence.passages)
+    normalized_query = normalize_catalog_text(query)
+    normalized_text = normalize_catalog_text(text)
+    language_key = str(language or "French").casefold()
+    number_match = re.search(r"\b\d+(?:[.,]\d+)?\b", text)
+    time_matches = re.findall(r"\b\d{1,2}(?:h|:)\d{2}\b", text, flags=re.IGNORECASE)
+    floor_match = re.search(r"\b(\d+)(?:er|ère|eme|ème)?\s+étage\b", text, flags=re.IGNORECASE)
+    duration_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s+(jours?|heures?|minutes?)\b", text, flags=re.IGNORECASE)
+    version_match = re.search(r"\bv(?:ersion)?\s*([0-9]+(?:[.][0-9]+)+)\b", text, flags=re.IGNORECASE)
+    role_match = re.search(r"\b(manager|responsable|administrateur|directeur|équipe IT|département IT)\b", text, flags=re.IGNORECASE)
+    entity = next(
+        (candidate for candidate in ("INZsmart", "SIMBOX", "VPN", "cafétéria", "cafeteria")
+         if normalize_catalog_text(candidate) in normalized_query),
+        None,
+    )
+
+    is_count = any(term in normalized_query for term in ("combien", "how many", "nombre", "cuantas", "cuantos"))
+    is_location = any(term in normalized_query for term in ("ou", "where", "etage", "location", "located", "emplacement"))
+    is_opening = any(term in normalized_query for term in ("horaire", "horaires", "ouverture", "open", "opening", "when", "abierto", "horario"))
+    is_duration = any(term in normalized_query for term in ("duree", "duration", "age maximal", "maximum age"))
+    is_approval = any(term in normalized_query for term in ("approuve", "approval", "approve", "manager", "responsabilite"))
+    is_version = "version" in normalized_query
+
+    if is_count and number_match and entity:
+        number = number_match.group(0)
+        if language_key == "english":
+            return f"There are {number} {entity} instances."
+        if language_key == "spanish":
+            return f"Hay {number} instancias de {entity}."
+        return f"Il y a {number} instances {entity}."
+    if is_opening and time_matches:
+        start, end = time_matches[0], time_matches[-1]
+        if language_key == "english":
+            return f"It is open from {start} to {end}."
+        if language_key == "spanish":
+            return f"Está abierto de {start} a {end}."
+        return f"C'est ouvert de {start} à {end}."
+    if is_location and floor_match:
+        floor = floor_match.group(1)
+        if language_key == "english":
+            ordinal = "th" if floor not in {"1", "2", "3"} else {"1": "st", "2": "nd", "3": "rd"}[floor]
+            return f"The location is on the {floor}{ordinal} floor."
+        if language_key == "spanish":
+            return f"La ubicación está en el piso {floor}."
+        return f"L'emplacement est au {floor}ème étage."
+    if is_duration and duration_match:
+        value, unit = duration_match.groups()
+        if language_key == "english":
+            return f"The duration is {value} {unit}."
+        if language_key == "spanish":
+            return f"La duración es de {value} {unit}."
+        return f"La durée est de {value} {unit}."
+    if is_approval and role_match:
+        role = role_match.group(1)
+        if language_key == "english":
+            return f"Approval is provided by the {role}."
+        if language_key == "spanish":
+            return f"La aprobación la proporciona {role}."
+        return f"L'approbation est fournie par {role}."
+    if is_version and version_match:
+        version = version_match.group(1)
+        if language_key == "english":
+            return f"The version is {version}."
+        if language_key == "spanish":
+            return f"La versión es {version}."
+        return f"La version est {version}."
+    return None
 
 def contextualize_query(user_query, chat_history, model_name):
     return rag_pipeline.rewrite_query(
@@ -1232,7 +1312,17 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         }
                         for source in extractive_result.sources
                     ]
-                    full_stream_response = extractive_result.answer_text
+                    localized_summary = build_direct_localized_summary(
+                        user_query, extractive_evidence, current_lang
+                    )
+                    if localized_summary:
+                        full_stream_response = (
+                            f"{direct_answer_label(current_lang)}:\n{localized_summary}\n\n"
+                            f"{direct_original_source_label(current_lang)}:\n"
+                            f"{extractive_result.answer_text}"
+                        )
+                    else:
+                        full_stream_response = extractive_result.answer_text
                     with st.chat_message("assistant"):
                         st.caption(direct_answer_label(current_lang))
                         st.caption(direct_source_label(current_lang))

@@ -2,6 +2,7 @@
 
 import ast
 import os
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
@@ -22,7 +23,9 @@ def _load_helpers():
         "detect_query_language",
         "direct_answer_label",
         "direct_source_label",
+        "direct_original_source_label",
         "direct_clarification_message",
+        "build_direct_localized_summary",
         "direct_document_identity",
         "build_direct_document_filter",
         "direct_filter_contains_identity",
@@ -128,6 +131,23 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertEqual(helpers["direct_source_label"]("Spanish"), "Pasaje fuente")
         self.assertIn("préciser", helpers["direct_clarification_message"]("French"))
         self.assertIn("clarify", helpers["direct_clarification_message"]("English"))
+
+    def test_localized_direct_summary_preserves_original_evidence(self):
+        helpers = _load_helpers()
+        passage = SimpleNamespace(text="Elle est ouverte de 12h00 à 14h30.")
+        evidence = SimpleNamespace(passages=(passage,))
+        english = helpers["build_direct_localized_summary"]("When is the cafeteria open?", evidence, "English")
+        french = helpers["build_direct_localized_summary"]("Quels sont les horaires de la cafétéria ?", evidence, "French")
+        self.assertEqual(english, "It is open from 12h00 to 14h30.")
+        self.assertEqual(french, "C'est ouvert de 12h00 à 14h30.")
+        self.assertEqual(helpers["direct_original_source_label"]("English"), "Original source passage")
+        self.assertEqual(helpers["direct_original_source_label"]("French"), "Passage source original")
+
+    def test_localized_summary_is_conservative_for_uncertain_evidence(self):
+        helpers = _load_helpers()
+        evidence = SimpleNamespace(passages=(SimpleNamespace(text="A generic policy passage."),))
+        self.assertIsNone(helpers["build_direct_localized_summary"]("What is this?", evidence, "English"))
+        self.assertIn("direct_original_source_label(current_lang)", APP_SOURCE)
 
     def test_language_is_stored_and_history_rendering_is_backward_compatible(self):
         self.assertIn('"language": current_lang', APP_SOURCE)
