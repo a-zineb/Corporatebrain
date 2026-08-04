@@ -245,6 +245,43 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(result.supporting_source_ids, (3,))
         self.assertTrue(any("time:12h00" in passage.matched_terms for passage in result.passages))
 
+    def test_multilingual_opening_time_prefers_explicit_time_passage(self):
+        sources = (rag_pipeline.PromptSource(
+            1, "local.pdf", "Page 1",
+            "Restauration La cafétéria principale est située au 4ème étage. "
+            "Elle est ouverte de 12h00 à 14h30.", "local.pdf",
+        ),)
+        for query in (
+            "Quels sont les horaires de la cafétéria ?",
+            "When is the cafeteria open?",
+            "What are the cafeteria opening hours?",
+        ):
+            trace = rag_pipeline.PipelineTrace(
+                query=query, rewritten_query=query,
+                prompt=rag_pipeline.PromptResult("prompt", sources=sources, context=""),
+            )
+            result = rag_pipeline.extract_evidence(trace)
+            self.assertEqual(len(result.passages), 1, query)
+            self.assertIn("12h00 à 14h30", result.passages[0].text, query)
+            self.assertNotIn("4ème étage", result.passages[0].text, query)
+
+    def test_opening_time_and_location_remain_distinct(self):
+        source = rag_pipeline.PromptSource(
+            1, "local.pdf", "Page 1",
+            "Restauration La cafétéria principale est située au 4ème étage. "
+            "Elle est ouverte de 12h00 à 14h30.", "local.pdf",
+        )
+        for query, expected in (
+            ("Où se trouve la cafétéria ?", "4ème étage"),
+            ("Where is the cafeteria located?", "4ème étage"),
+        ):
+            result = rag_pipeline.extract_evidence(rag_pipeline.PipelineTrace(
+                query=query, rewritten_query=query,
+                prompt=rag_pipeline.PromptResult("prompt", sources=(source,), context=""),
+            ))
+            self.assertEqual(len(result.passages), 1)
+            self.assertIn(expected, result.passages[0].text)
+
     def test_generic_interrogatives_do_not_add_unrelated_passages(self):
         sources = (
             rag_pipeline.PromptSource(

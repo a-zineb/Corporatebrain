@@ -993,6 +993,12 @@ def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str
     normalized_query = _normalize_evidence_text(query)
     normalized_passage = _normalize_evidence_text(passage)
     query_terms = {term for term in normalized_query.split() if len(term) > 2 and term not in _EVIDENCE_STOPWORDS}
+    opening_time_aliases = {
+        "open", "opened", "opening", "openings", "hours", "hour", "when",
+        "ouvert", "ouverte", "ouverts", "ouverture", "horaires", "horaire", "heure",
+        "abierto", "abierta", "horario", "horarios",
+    }
+    opening_time_intent = bool(set(normalized_query.split()) & opening_time_aliases)
     passage_terms = set(normalized_passage.split())
     matched = set(query_terms & passage_terms)
     for query_term in query_terms:
@@ -1009,12 +1015,12 @@ def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str
     passage_acronyms = set(re.findall(r"\b[A-Z][A-Za-z0-9]{1,}\b", passage))
     matched_acronyms = query_acronyms & passage_acronyms
     matched.update(matched_acronyms)
-    time_patterns = set(re.findall(r"\b\d{1,2}h\d{2}\b", passage, flags=re.IGNORECASE))
+    time_patterns = set(re.findall(r"\b\d{1,2}(?:h|:)\d{2}\b", passage, flags=re.IGNORECASE))
     time_intent = any(
         term.startswith("heure") or term.startswith("horaire") or term == "ouverture"
         for term in query_terms
     )
-    if time_intent and time_patterns:
+    if (time_intent or opening_time_intent) and time_patterns:
         matched.update(
             term for term in query_terms
             if term.startswith("heure") or term.startswith("horaire") or term == "ouverture"
@@ -1062,7 +1068,16 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
             score, matched_terms = _evidence_match_features(query, passage)
             if score > 0 and matched_terms:
                 candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2], _normalize_evidence_text(item[4])))
+    opening_time_query = bool(
+        set(_normalize_evidence_text(query).split())
+        & {"open", "opened", "opening", "openings", "hours", "hour", "when", "ouvert", "ouverte", "ouverture", "horaires", "horaire", "heure", "abierto", "abierta", "horario", "horarios"}
+    )
+    candidates.sort(
+        key=lambda item: (
+            -(item[0] + (1.0 if opening_time_query and re.search(r"\b\d{1,2}(?:h|:)\d{2}\b", item[4], flags=re.IGNORECASE) else 0.0)),
+            -item[0], item[1], item[2], _normalize_evidence_text(item[4]),
+        )
+    )
     if _classify_evidence_query(query) == "single_fact":
         selected = candidates[:1]
     else:
