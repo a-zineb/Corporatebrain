@@ -909,16 +909,15 @@ if answer_mode == "Direct answer":
         if option_ids:
             if st.session_state.direct_answer_document_id not in option_ids:
                 st.session_state.direct_answer_document_id = None
-            selected_id = st.selectbox(
+            st.selectbox(
                 "Document",
                 [None, *option_ids],
                 format_func=lambda value: (
                     "Select a document..." if value is None
                     else direct_options[value].get("source_file", value)
                 ),
-                key="direct_answer_document_selector",
+                key="direct_answer_document_id",
             )
-            st.session_state.direct_answer_document_id = selected_id
         else:
             st.session_state.direct_answer_document_id = None
             st.info("Aucun document disponible dans le périmètre des filtres actifs.")
@@ -1129,7 +1128,8 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             docs=bm25_docs,
             metadatas=bm25_metas,
             chroma_filter=retrieval_filter,
-            top_k=15
+            top_k=15,
+            min_results_before_relax=(0 if extractive_route and direct_scope == "specific_document" else 3),
         )
 
         if extractive_route and direct_scope == "specific_document":

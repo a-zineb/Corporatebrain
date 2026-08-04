@@ -234,6 +234,18 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertNotIn('st.selectbox(\n        "Scope",\n        ["specific_document", "all_documents_experimental"]', ui)
         self.assertIn('st.caption(f"Selected document:', ui)
 
+    def test_document_selector_uses_canonical_id_state(self):
+        self.assertIn('key="direct_answer_document_id"', APP_SOURCE)
+        self.assertNotIn('key="direct_answer_document_selector"', APP_SOURCE)
+        self.assertNotIn('st.session_state.direct_answer_document_id = selected_id', APP_SOURCE)
+        self.assertIn('direct_document_identity(metadata) == st.session_state.direct_answer_document_id', APP_SOURCE)
+
+    def test_scoped_direct_retrieval_cannot_trigger_global_fallback(self):
+        self.assertIn(
+            'min_results_before_relax=(0 if extractive_route and direct_scope == "specific_document" else 3)',
+            APP_SOURCE,
+        )
+
     def test_direct_scope_identity_is_fail_closed(self):
         helpers = _load_helpers()
         selected = {"file_hash": "hash-1", "source_file": "selected.docx"}
