@@ -550,7 +550,12 @@ def build_direct_localized_summary(query, evidence, language):
     time_matches = re.findall(r"\b\d{1,2}(?:h|:)\d{2}\b", text, flags=re.IGNORECASE)
     floor_match = re.search(r"\b(\d+)(?:er|ère|eme|ème)?\s+étage\b", text, flags=re.IGNORECASE)
     duration_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s+(jours?|heures?|minutes?)\b", text, flags=re.IGNORECASE)
-    version_match = re.search(r"\bv(?:ersion)?\s*([0-9]+(?:[.][0-9]+)+)\b", text, flags=re.IGNORECASE)
+    version_match = re.search(
+        r"(?:\bv(?:ersion)?\s*|\bversion\s+|\bfinal\s+version\s+)"
+        r"([0-9]+(?:[.][0-9]+)+[a-z]?)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
     role_match = re.search(r"\b(manager|responsable|administrateur|directeur|équipe IT|département IT)\b", text, flags=re.IGNORECASE)
     entity = next(
         (candidate for candidate in ("INZsmart", "SIMBOX", "VPN", "cafétéria", "cafeteria")
@@ -564,6 +569,7 @@ def build_direct_localized_summary(query, evidence, language):
     is_duration = any(term in normalized_query for term in ("duree", "duration", "age maximal", "maximum age"))
     is_approval = any(term in normalized_query for term in ("approuve", "approval", "approve", "manager", "responsabilite"))
     is_version = "version" in normalized_query
+    is_parameter = any(term in normalized_query for term in ("parametre", "parameter"))
 
     if is_count and number_match and entity:
         number = number_match.group(0)
@@ -608,6 +614,12 @@ def build_direct_localized_summary(query, evidence, language):
         if language_key == "spanish":
             return f"La versión es {version}."
         return f"La version est {version}."
+    if is_parameter and any(term in normalized_text for term in ("duplicate", "doublon", "dupliqu", "batch check", "verification")):
+        if language_key == "english":
+            return "The duplicate-file detection parameter is Duplicate Batch Check."
+        if language_key == "spanish":
+            return "El parámetro de detección de duplicados es Duplicate Batch Check."
+        return "Le paramètre de détection des doublons est Duplicate Batch Check."
     return None
 
 def contextualize_query(user_query, chat_history, model_name):

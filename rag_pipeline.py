@@ -1057,6 +1057,21 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
     query = trace.rewritten_query or trace.query
     if trace.prompt is None or not trace.prompt.sources:
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "no_prompt_sources")
+    # A bare document/entity label is not a factual target.  Treat it as
+    # genuinely vague so callers can ask for clarification instead of
+    # surfacing a filename or other metadata sentence as an answer.
+    normalized_query = _normalize_evidence_text(query)
+    query_terms = normalized_query.split()
+    factual_markers = {
+        "version", "specification", "parametre", "parameter", "duplicate",
+        "doublon", "dupliqu", "duree", "duration", "age", "maximum",
+        "maximal", "combien", "nombre", "count", "how", "many", "where",
+        "ou", "etage", "location", "located", "horaire", "horaires",
+        "ouverture", "open", "opening", "when", "qui", "who", "approuve",
+        "approval", "approve",
+    }
+    if len(query_terms) <= 2 and not set(query_terms) & factual_markers:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "vague_query")
     candidates: list[tuple[float, int, int, PromptSource, str, tuple[str, ...]]] = []
     seen: set[tuple[str, str]] = set()
     for source in trace.prompt.sources:
@@ -1072,8 +1087,28 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
         set(_normalize_evidence_text(query).split())
         & {"open", "opened", "opening", "openings", "hours", "hour", "when", "ouvert", "ouverte", "ouverture", "horaires", "horaire", "heure", "abierto", "abierta", "horario", "horarios"}
     )
+    normalized_query_for_priority = _normalize_evidence_text(query)
+
+    def attribute_priority(passage_text: str) -> int:
+        normalized_passage = _normalize_evidence_text(passage_text)
+        if "version" in normalized_query_for_priority and "version" in normalized_passage and re.search(r"\bv?\d+(?:\.\d+)+[a-z]?\b", passage_text, flags=re.IGNORECASE):
+            return 3
+        if (
+            any(term in normalized_query_for_priority for term in ("duree", "duration", "age maximal", "maximum age"))
+            or ("maximum" in normalized_query_for_priority and "age" in normalized_query_for_priority)
+        ):
+            if ("cache" in normalized_passage or "age" in normalized_passage) and re.search(r"\b\d+(?:[.,]\d+)?\s+(?:jours?|heures?|minutes?)\b", normalized_passage):
+                return 3
+        if any(term in normalized_query_for_priority for term in ("parametre", "parameter")):
+            if any(term in normalized_passage for term in ("batch check", "verification", "vérification")):
+                return 4
+            if any(term in normalized_passage for term in ("duplicate", "doublon", "dupliqu")):
+                return 2
+        return 0
+
     candidates.sort(
         key=lambda item: (
+            -attribute_priority(item[4]),
             -(item[0] + (1.0 if opening_time_query and re.search(r"\b\d{1,2}(?:h|:)\d{2}\b", item[4], flags=re.IGNORECASE) else 0.0)),
             -item[0], item[1], item[2], _normalize_evidence_text(item[4]),
         )

@@ -862,6 +862,44 @@ class DeterministicEvaluatorTests(unittest.TestCase):
             self.assertEqual(evaluate.call_count, 1)
             self.assertEqual(len(resumed), 1)
 
+    def test_attribute_queries_choose_explicit_supporting_passages(self):
+        cases = (
+            (
+                "What is the MBF specification version?",
+                "Mach Billing Format (MBF) Specification v1.10m.doc. The MBF version is v1.10m.",
+                "MBF version is v1.10m",
+            ),
+            (
+                "What parameter controls duplicate file detection?",
+                "Duplicate check is performed on files. Duplicate Batch Check controls duplicate file detection.",
+                "Duplicate Batch Check controls duplicate file detection",
+            ),
+            (
+                "What is the maximum SIMBOX cache age?",
+                "SIMBOX cache settings. L'âge maximal du cache sera défini sur 30 jours.",
+                "L'âge maximal du cache sera défini sur 30 jours",
+            ),
+        )
+        for query, text, expected in cases:
+            source = rag_pipeline.PromptSource(1, "selected.pdf", "Page 1", text, "selected.pdf")
+            trace = rag_pipeline.PipelineTrace(
+                query=query, rewritten_query=query,
+                prompt=rag_pipeline.PromptResult("prompt", sources=(source,), context=text),
+            )
+            result = rag_pipeline.extract_evidence(trace)
+            self.assertEqual(result.status, "EVIDENCE_FOUND", query)
+            self.assertEqual(len(result.passages), 1, query)
+            self.assertIn(expected, result.passages[0].text, query)
+
+    def test_vague_entity_query_returns_structured_clarification_reason(self):
+        source = rag_pipeline.PromptSource(1, "mbf.doc", "Page 1", "MBF version v1.10m.", "mbf.doc")
+        result = rag_pipeline.extract_evidence(rag_pipeline.PipelineTrace(
+            query="MBF?", rewritten_query="MBF?",
+            prompt=rag_pipeline.PromptResult("prompt", sources=(source,), context=source.text),
+        ))
+        self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
+        self.assertEqual(result.failure_reason, "vague_query")
+
 
 if __name__ == "__main__":
     unittest.main()

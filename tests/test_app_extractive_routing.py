@@ -177,6 +177,36 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertIsNone(helpers["build_direct_localized_summary"]("What is this?", evidence, "English"))
         self.assertIn("direct_original_source_label(current_lang)", APP_SOURCE)
 
+    def test_parameter_summary_uses_explicit_duplicate_batch_check_value(self):
+        helpers = _load_helpers()
+        evidence = SimpleNamespace(passages=(SimpleNamespace(
+            text="Duplicate Batch Check controls duplicate file detection."
+        ),))
+        self.assertEqual(
+            helpers["build_direct_localized_summary"](
+                "What parameter controls duplicate file detection?", evidence, "English"
+            ),
+            "The duplicate-file detection parameter is Duplicate Batch Check.",
+        )
+        self.assertEqual(
+            helpers["build_direct_localized_summary"](
+                "Quel paramètre contrôle les fichiers dupliqués ?", evidence, "French"
+            ),
+            "Le paramètre de détection des doublons est Duplicate Batch Check.",
+        )
+
+    def test_version_summary_accepts_explicit_version_wording(self):
+        helpers = _load_helpers()
+        evidence = SimpleNamespace(passages=(SimpleNamespace(
+            text="MBF Technical Specification. Final Version 1.10k."
+        ),))
+        self.assertEqual(
+            helpers["build_direct_localized_summary"](
+                "What is the MBF specification version?", evidence, "English"
+            ),
+            "The version is 1.10k.",
+        )
+
     def test_language_is_stored_and_history_rendering_is_backward_compatible(self):
         self.assertIn('"language": current_lang', APP_SOURCE)
         self.assertIn('msg.get("language", "French")', APP_SOURCE)
