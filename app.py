@@ -1143,6 +1143,11 @@ if answer_mode == "Direct answer":
         )
         if selected_metadata is not None:
             st.caption(f"Selected document: {selected_metadata.get('source_file', '')}")
+    else:
+        st.warning(
+            "Experimental global search may be less precise. "
+            "Select a specific document for the most reliable result."
+        )
 st.caption(
     "Knowledge catalog : liste complète des documents. "
     "Direct answer : extraction déterministe. "

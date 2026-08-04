@@ -422,6 +422,13 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
                 os.environ["ENABLE_EXPERIMENTAL_GLOBAL_DIRECT_ANSWER"] = original
         self.assertIn('st.session_state.direct_answer_scope = "specific_document"', APP_SOURCE)
         self.assertIn('st.session_state.get("direct_answer_scope") not in scope_options', APP_SOURCE)
+        self.assertIn("Experimental global search may be less precise", APP_SOURCE)
+        self.assertIn("Select a specific document for the most reliable result", APP_SOURCE)
+
+    def test_stable_specific_document_route_contract_is_unchanged(self):
+        self.assertIn('if extractive_route and direct_scope == "specific_document" and direct_document is not None:', APP_SOURCE)
+        self.assertIn('min_results_before_relax=(0 if extractive_route and direct_scope == "specific_document" else 3)', APP_SOURCE)
+        self.assertIn('retrieval_filter = build_direct_document_filter(chroma_filter, direct_document)', APP_SOURCE)
 
     def test_direct_ui_requires_specific_document_by_default_and_shows_selection(self):
         ui = APP_SOURCE[APP_SOURCE.index('direct_scope = "specific_document"'):APP_SOURCE.index('st.caption(\n    "Knowledge catalog', APP_SOURCE.index('direct_scope = "specific_document"'))]
