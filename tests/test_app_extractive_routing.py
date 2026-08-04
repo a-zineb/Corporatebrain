@@ -231,6 +231,30 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
             "The version is 1.10k.",
         )
 
+    def test_localized_summaries_cover_floor_duration_and_vpn(self):
+        helpers = _load_helpers()
+        summary = helpers["build_direct_localized_summary"]
+        self.assertEqual(
+            summary("What floor is the cafeteria on?", SimpleNamespace(passages=(SimpleNamespace(text="La cafétéria est située au 4ème étage."),)), "English"),
+            "The location is on the 4th floor.",
+        )
+        self.assertEqual(
+            summary("What is the maximum SIMBOX cache age?", SimpleNamespace(passages=(SimpleNamespace(text="L'âge maximal du cache sera défini sur 30 jours."),)), "English"),
+            "The maximum SIMBOX cache age is 30 days.",
+        )
+        self.assertEqual(
+            summary("Who approves VPN requests?", SimpleNamespace(passages=(SimpleNamespace(text="VPN requests require manager approval."),)), "English"),
+            "VPN requests must be approved by the manager.",
+        )
+        self.assertEqual(
+            summary("Qui approuve une demande VPN ?", SimpleNamespace(passages=(SimpleNamespace(text="Les demandes VPN doivent obtenir l'approbation de leur manager."),)), "French"),
+            "Les demandes VPN doivent être approuvées par le manager.",
+        )
+        self.assertEqual(
+            summary("¿Cuántas instancias de INZsmart están desplegadas?", SimpleNamespace(passages=(SimpleNamespace(text="INZsmart comporte 12 instances."),)), "Spanish"),
+            "Hay 12 instancias de INZsmart.",
+        )
+
     def test_language_is_stored_and_history_rendering_is_backward_compatible(self):
         self.assertIn('"language": current_lang', APP_SOURCE)
         self.assertIn('msg.get("language", "French")', APP_SOURCE)

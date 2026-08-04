@@ -574,7 +574,11 @@ def build_direct_localized_summary(query, evidence, language):
     language_key = str(language or "French").casefold()
     number_match = re.search(r"\b\d+(?:[.,]\d+)?\b", text)
     time_matches = re.findall(r"\b\d{1,2}(?:h|:)\d{2}\b", text, flags=re.IGNORECASE)
-    floor_match = re.search(r"\b(\d+)(?:er|ère|eme|ème)?\s+étage\b", text, flags=re.IGNORECASE)
+    floor_match = re.search(
+        r"\b(\d+)(?:er|ère|eme|ème)?\s+(?:étage|etage|floor)\b|\b(?:floor|étage|etage)\s+(\d+)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
     duration_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s+(jours?|heures?|minutes?)\b", text, flags=re.IGNORECASE)
     version_match = re.search(
         r"(?:\bv(?:ersion)?\s*|\bversion\s+|\bfinal\s+version\s+)"
@@ -590,9 +594,11 @@ def build_direct_localized_summary(query, evidence, language):
     )
 
     is_count = any(term in normalized_query for term in ("combien", "how many", "nombre", "cuantas", "cuantos"))
-    is_location = any(term in normalized_query for term in ("ou", "where", "etage", "location", "located", "emplacement"))
+    is_location = any(term in normalized_query for term in ("ou", "where", "etage", "floor", "location", "located", "emplacement"))
     is_opening = any(term in normalized_query for term in ("horaire", "horaires", "ouverture", "open", "opening", "when", "abierto", "horario"))
-    is_duration = any(term in normalized_query for term in ("duree", "duration", "age maximal", "maximum age"))
+    is_duration = any(term in normalized_query for term in ("duree", "duration", "age maximal", "maximum age")) or (
+        "maximum" in normalized_query and "age" in normalized_query
+    )
     is_approval = any(term in normalized_query for term in ("approuve", "approval", "approve", "manager", "responsabilite"))
     is_version = "version" in normalized_query
     is_parameter = any(term in normalized_query for term in ("parametre", "parameter"))
@@ -612,7 +618,7 @@ def build_direct_localized_summary(query, evidence, language):
             return f"Está abierto de {start} a {end}."
         return f"C'est ouvert de {start} à {end}."
     if is_location and floor_match:
-        floor = floor_match.group(1)
+        floor = floor_match.group(1) or floor_match.group(2)
         if language_key == "english":
             ordinal = "th" if floor not in {"1", "2", "3"} else {"1": "st", "2": "nd", "3": "rd"}[floor]
             return f"The location is on the {floor}{ordinal} floor."
@@ -622,6 +628,9 @@ def build_direct_localized_summary(query, evidence, language):
     if is_duration and duration_match:
         value, unit = duration_match.groups()
         if language_key == "english":
+            unit = {"jours": "days", "jour": "day", "heures": "hours", "heure": "hour", "minutes": "minutes", "minute": "minute"}.get(unit.casefold(), unit)
+            if entity == "SIMBOX":
+                return f"The maximum SIMBOX cache age is {value} {unit}."
             return f"The duration is {value} {unit}."
         if language_key == "spanish":
             return f"La duración es de {value} {unit}."
@@ -629,13 +638,19 @@ def build_direct_localized_summary(query, evidence, language):
     if is_approval and role_match:
         role = role_match.group(1)
         if language_key == "english":
+            if entity == "VPN":
+                return f"VPN requests must be approved by the {role}."
             return f"Approval is provided by the {role}."
         if language_key == "spanish":
             return f"La aprobación la proporciona {role}."
+        if entity == "VPN":
+            return f"Les demandes VPN doivent être approuvées par le {role}."
         return f"L'approbation est fournie par {role}."
     if is_version and version_match:
         version = version_match.group(1)
         if language_key == "english":
+            if entity == "MBF":
+                return f"The MBF version is {version}."
             return f"The version is {version}."
         if language_key == "spanish":
             return f"La versión es {version}."
@@ -646,7 +661,17 @@ def build_direct_localized_summary(query, evidence, language):
         if language_key == "spanish":
             return "El parámetro de detección de duplicados es Duplicate Batch Check."
         return "Le paramètre de détection des doublons est Duplicate Batch Check."
+    # Entity-specific French phrasing is kept deterministic and only emitted
+    # when the evidence contains the requested value.
+    if entity == "SIMBOX" and is_duration and duration_match and language_key not in {"english", "spanish"}:
+        value, unit = duration_match.groups()
+        return f"L'Ã¢ge maximal du cache SIMBOX est de {value} {unit}."
+    if entity == "VPN" and is_approval and role_match and language_key not in {"english", "spanish"}:
+        return f"Les demandes VPN doivent Ãªtre approuvÃ©es par le {role_match.group(1)}."
+
+
     return None
+
 
 def contextualize_query(user_query, chat_history, model_name):
     return rag_pipeline.rewrite_query(
