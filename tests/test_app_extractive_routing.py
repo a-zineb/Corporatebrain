@@ -23,6 +23,8 @@ def _load_helpers():
         "direct_sensitive_message",
         "detect_direct_vague_entity",
         "direct_vague_message",
+        "detect_direct_incomplete_query",
+        "direct_incomplete_message",
         "detect_query_language",
         "direct_answer_label",
         "direct_source_label",
@@ -143,6 +145,28 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertIn('"actual_mode": "direct_vague_query"', APP_SOURCE)
         start = APP_SOURCE.index("vague_entity = detect_direct_vague_entity")
         end = APP_SOURCE.index("if answer_mode == \"Direct answer\" and not is_direct_answer_suitable", start)
+        block = APP_SOURCE[start:end]
+        self.assertNotIn("hybrid_search(", block)
+        self.assertNotIn("extract_evidence(", block)
+        self.assertNotIn("stream_generate(", block)
+
+    def test_incomplete_queries_are_detected_without_history_inference(self):
+        helpers = _load_helpers()
+        for query in ("definition", "meaning?", "the answer?", "what about it?", "and the version?", "et la durée ?", "y la versión?"):
+            self.assertTrue(helpers["detect_direct_incomplete_query"](query), query)
+        for query in ("INZsmart", "What is INZsmart?", "Explain INZsmart.", "What is the administrator password?"):
+            self.assertFalse(helpers["detect_direct_incomplete_query"](query), query)
+
+    def test_incomplete_messages_are_localized(self):
+        message = _load_helpers()["direct_incomplete_message"]
+        self.assertIn("restate the complete factual question", message("English"))
+        self.assertIn("reformuler la question factuelle complète", message("French"))
+        self.assertIn("Reformule la pregunta factual completa", message("Spanish"))
+
+    def test_incomplete_route_precedes_all_downstream_work(self):
+        self.assertIn('"actual_mode": "direct_incomplete_query"', APP_SOURCE)
+        start = APP_SOURCE.index("detect_direct_incomplete_query(user_query)")
+        end = APP_SOURCE.index("if answer_mode == \"Direct answer\":", start)
         block = APP_SOURCE[start:end]
         self.assertNotIn("hybrid_search(", block)
         self.assertNotIn("extract_evidence(", block)

@@ -170,6 +170,24 @@ def direct_vague_message(language, entity):
     return f"Que souhaitez-vous savoir sur {entity} ?"
 
 
+def detect_direct_incomplete_query(query):
+    """Recognize follow-up fragments that lack a factual subject."""
+    normalized = normalize_catalog_text(query)
+    incomplete = {
+        "definition", "meaning", "the answer", "what about it", "and the version",
+        "et la duree", "et la durée", "y la version",
+    }
+    return normalized.rstrip(" ?!.:") in {normalize_catalog_text(value) for value in incomplete}
+
+
+def direct_incomplete_message(language):
+    if str(language or "").casefold() == "english":
+        return "Please restate the complete factual question and include the subject."
+    if str(language or "").casefold() == "spanish":
+        return "Reformule la pregunta factual completa e indique el tema."
+    return "Veuillez reformuler la question factuelle complète en précisant le sujet."
+
+
 def is_direct_sensitive_request(query):
     """Detect direct requests for credentials or other authentication secrets."""
     normalized = normalize_catalog_text(query)
@@ -1229,6 +1247,25 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 "requested_mode": answer_mode,
                 "actual_mode": "direct_sensitive_request",
                 "direct_status": "direct_sensitive_request",
+                "sources_count": 0,
+            }, ensure_ascii=False) + "\n")
+        st.stop()
+
+    if answer_mode == "Direct answer" and detect_direct_incomplete_query(user_query):
+        incomplete_message = direct_incomplete_message(current_lang)
+        with st.chat_message("assistant"):
+            st.caption("Mode : direct_incomplete_query")
+            st.info(incomplete_message)
+        st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
+        st.session_state.messages.append({
+            "role": "assistant", "content": incomplete_message, "language": current_lang,
+            "actual_mode": "direct_incomplete_query", "direct_failure_reason": "missing_query_subject", "sources": [],
+        })
+        with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+            audit_f.write(json.dumps({
+                "timestamp": datetime.now().isoformat(), "question_originale": user_query,
+                "language": current_lang, "requested_mode": answer_mode,
+                "actual_mode": "direct_incomplete_query", "direct_failure_reason": "missing_query_subject",
                 "sources_count": 0,
             }, ensure_ascii=False) + "\n")
         st.stop()
