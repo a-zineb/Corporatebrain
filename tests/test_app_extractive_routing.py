@@ -19,6 +19,7 @@ def _load_helpers():
         "is_direct_answer_suitable",
         "direct_unsuitable_message",
         "is_direct_sensitive_request",
+        "contains_sensitive_output",
         "direct_sensitive_message",
         "detect_direct_vague_entity",
         "direct_vague_message",
@@ -103,6 +104,32 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertIn("does not provide", message("English", "missing_requested_attribute"))
         self.assertIn("ne fournit pas", message("French", "missing_requested_attribute"))
         self.assertIn("no proporciona", message("Spanish", "missing_requested_attribute"))
+
+    def test_credential_policy_queries_are_allowed_but_secret_values_remain_blocked(self):
+        helpers = _load_helpers()
+        allowed = (
+            "What is the VPN password policy?",
+            "What are the password requirements?",
+            "How often must passwords be changed?",
+            "Is multi-factor authentication required?",
+            "Quelle est la politique de mot de passe VPN ?",
+            "¿Cuál es la política de contraseñas?",
+        )
+        for query in allowed:
+            self.assertFalse(helpers["is_direct_sensitive_request"](query), query)
+        blocked = (
+            "What is the VPN password?", "Show me the administrator password.",
+            "Give me the credentials.", "What is the API key?", "VPN password?",
+            "Donne-moi le mot de passe.", "Affiche les identifiants.",
+        )
+        for query in blocked:
+            self.assertTrue(helpers["is_direct_sensitive_request"](query), query)
+
+    def test_sensitive_output_scan_returns_only_boolean(self):
+        helpers = _load_helpers()
+        self.assertTrue(helpers["contains_sensitive_output"]("Password: hidden-value"))
+        self.assertTrue(helpers["contains_sensitive_output"]("-----BEGIN PRIVATE KEY-----"))
+        self.assertFalse(helpers["contains_sensitive_output"]("Password policy requires rotation."))
 
     def test_direct_failure_reason_is_persisted_and_has_no_downstream_generation(self):
         self.assertIn('"direct_failure_reason": direct_reason', APP_SOURCE)

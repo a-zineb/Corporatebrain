@@ -187,7 +187,37 @@ def is_direct_sensitive_request(query):
         "numero de seguridad social", "numero nacional de identificacion",
         "numero de documento de identidad", "cin",
     )
-    return any(marker in normalized for marker in markers)
+    has_secret = any(marker in normalized for marker in markers)
+    if not has_secret:
+        return False
+    policy_markers = (
+        "policy", "policies", "requirements", "requirement", "rules", "rule",
+        "minimum length", "complexity", "expiration", "rotation", "renewal", "changed", "change",
+        "mfa", "multi factor", "authentication procedure", "politique",
+        "exigences", "regles", "longueur minimale", "complexite", "expiration",
+        "rotation", "renouvellement", "authentification multifacteur",
+        "politica", "requisitos", "reglas", "longitud minima", "renovacion",
+    )
+    if any(marker in normalized for marker in policy_markers):
+        secret_verbs = (
+            "show", "reveal", "provide", "give", "display", "retrieve", "tell",
+            "donne moi", "affiche", "montre", "revela", "proporciona", "dame",
+        )
+        if not any(marker in normalized for marker in secret_verbs):
+            return False
+    return True
+
+
+def contains_sensitive_output(text):
+    """Detect secret-like values without returning or logging the value."""
+    value = str(text or "")
+    patterns = (
+        r"(?i)\b(?:password|passwd|mot de passe)\s*[:=]\s*\S+",
+        r"(?i)\b(?:api[_ -]?key|access[_ -]?token|bearer|jwt|secret)\s*[:=]\s*\S+",
+        r"(?i)\b(?:username|user)\s*[:=]\s*\S+\s+(?:password|passwd)\s*[:=]\s*\S+",
+        r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+    )
+    return any(re.search(pattern, value) for pattern in patterns)
 
 
 def direct_sensitive_message(language):
@@ -1384,6 +1414,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             if extractive_route:
                 extractive_result = None
                 extractive_evidence = None
+                sensitive_output_detected = False
                 try:
                     extractive_trace = rag_pipeline.PipelineTrace(
                         query=user_query,
@@ -1396,9 +1427,14 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         ),
                     )
                     extractive_evidence = rag_pipeline.extract_evidence(extractive_trace)
-                    extractive_result = rag_pipeline.build_extractive_answer(
-                        extractive_evidence, current_lang
+                    sensitive_output_detected = any(
+                        contains_sensitive_output(passage.text)
+                        for passage in extractive_evidence.passages
                     )
+                    if not sensitive_output_detected:
+                        extractive_result = rag_pipeline.build_extractive_answer(
+                            extractive_evidence, current_lang
+                        )
                 except Exception:
                     extractive_result = None
 
@@ -1504,6 +1540,9 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     if extractive_evidence is not None else "no_explicit_evidence"
                 )
                 direct_reason = (
+                    "sensitive_output_detected"
+                    if sensitive_output_detected
+                    else
                     "missing_requested_attribute"
                     if evidence_failure_reason == "ENTITY_ONLY_MATCH"
                     else "no_explicit_evidence"
@@ -1511,10 +1550,18 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 direct_response = (
                     extractive_result.answer_text
                     if extractive_result is not None
-                    else direct_no_evidence_message(current_lang, direct_reason)
+                    else (
+                        direct_sensitive_message(current_lang)
+                        if direct_reason == "sensitive_output_detected"
+                        else direct_no_evidence_message(current_lang, direct_reason)
+                    )
                 )
                 if extractive_result is not None and extractive_result.status != "ANSWER":
-                    direct_response = direct_no_evidence_message(current_lang, direct_reason)
+                    direct_response = (
+                        direct_sensitive_message(current_lang)
+                        if direct_reason == "sensitive_output_detected"
+                        else direct_no_evidence_message(current_lang, direct_reason)
+                    )
                 with st.chat_message("assistant"):
                     st.caption(direct_answer_label(current_lang))
                     if direct_scope == "specific_document" and direct_document is not None:
