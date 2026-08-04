@@ -20,6 +20,8 @@ def _load_helpers():
         "direct_unsuitable_message",
         "is_direct_sensitive_request",
         "direct_sensitive_message",
+        "detect_direct_vague_entity",
+        "direct_vague_message",
         "detect_query_language",
         "direct_answer_label",
         "direct_source_label",
@@ -78,6 +80,28 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         ):
             self.assertFalse(detect(query))
         self.assertFalse(detect("What is the location?", has_history=True))
+
+    def test_entity_only_queries_are_vague_not_unsuitable(self):
+        helpers = _load_helpers()
+        for query, expected in (("INZsmart", "INZsmart"), ("VPN?", "VPN"), ("cafeteria", "cafeteria"), ("SIMBOX", "SIMBOX"), ("MBF", "MBF")):
+            self.assertEqual(helpers["detect_direct_vague_entity"](query), expected)
+        self.assertIsNone(helpers["detect_direct_vague_entity"]("Combien d’instances INZsmart ?"))
+        self.assertIsNone(helpers["detect_direct_vague_entity"]("Explique INZsmart."))
+
+    def test_vague_message_is_language_specific(self):
+        helpers = _load_helpers()
+        self.assertEqual(helpers["direct_vague_message"]("English", "INZsmart"), "What would you like to know about INZsmart?")
+        self.assertEqual(helpers["direct_vague_message"]("French", "INZsmart"), "Que souhaitez-vous savoir sur INZsmart ?")
+        self.assertIn("INZsmart", helpers["direct_vague_message"]("Spanish", "INZsmart"))
+
+    def test_vague_route_precedes_retrieval_and_generation(self):
+        self.assertIn('"actual_mode": "direct_vague_query"', APP_SOURCE)
+        start = APP_SOURCE.index("vague_entity = detect_direct_vague_entity")
+        end = APP_SOURCE.index("if answer_mode == \"Direct answer\" and not is_direct_answer_suitable", start)
+        block = APP_SOURCE[start:end]
+        self.assertNotIn("hybrid_search(", block)
+        self.assertNotIn("extract_evidence(", block)
+        self.assertNotIn("stream_generate(", block)
 
     def test_direct_answer_suitability_rejects_explanatory_and_comparative_queries(self):
         suitable = _load_helpers()["is_direct_answer_suitable"]

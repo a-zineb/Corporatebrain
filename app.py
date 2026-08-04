@@ -144,6 +144,32 @@ def direct_unsuitable_message(language):
     return "Cette question nécessite une explication ou une synthèse. Utilisez le mode « AI answer » pour obtenir une réponse générée à partir des documents."
 
 
+def detect_direct_vague_entity(query):
+    """Return the named entity for an entity-only factual query."""
+    normalized = normalize_catalog_text(query)
+    if len(normalized.split()) != 1:
+        return None
+    entities = (
+        ("INZsmart", "inzsmart"), ("SIMBOX", "simbox"), ("VPN", "vpn"),
+        ("MBF", "mbf"), ("cafeteria", "cafeteria"), ("GGSN", "ggsn"),
+        ("P2P", "p2p"), ("CRBT", "crbt"), ("Huawei MSC", "huawei msc"),
+    )
+    for display, token in entities:
+        if normalized == token:
+            match = re.search(re.escape(token), str(query or ""), flags=re.IGNORECASE)
+            return match.group(0) if match else display
+    return None
+
+
+def direct_vague_message(language, entity):
+    entity = entity or ""
+    if str(language or "").casefold() == "english":
+        return f"What would you like to know about {entity}?"
+    if str(language or "").casefold() == "spanish":
+        return f"Â¿Qué desea saber sobre {entity}?"
+    return f"Que souhaitez-vous savoir sur {entity} ?"
+
+
 def is_direct_sensitive_request(query):
     """Detect direct requests for credentials or other authentication secrets."""
     normalized = normalize_catalog_text(query)
@@ -1137,6 +1163,30 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 "sources_count": 0,
             }, ensure_ascii=False) + "\n")
         st.stop()
+
+    if answer_mode == "Direct answer":
+        vague_entity = detect_direct_vague_entity(user_query)
+        if vague_entity:
+            vague_message = direct_vague_message(current_lang, vague_entity)
+            with st.chat_message("assistant"):
+                st.caption("Mode : direct_vague_query")
+                st.info(vague_message)
+            st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
+            st.session_state.messages.append({
+                "role": "assistant", "content": vague_message, "language": current_lang,
+                "actual_mode": "direct_vague_query", "answer_mode": "direct_vague_query", "sources": [],
+            })
+            with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+                audit_f.write(json.dumps({
+                    "timestamp": datetime.now().isoformat(),
+                    "question_originale": user_query,
+                    "language": current_lang,
+                    "requested_mode": answer_mode,
+                    "actual_mode": "direct_vague_query",
+                    "direct_status": "direct_vague_query",
+                    "sources_count": 0,
+                }, ensure_ascii=False) + "\n")
+            st.stop()
 
     if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query):
         direct_message = direct_unsuitable_message(current_lang)
