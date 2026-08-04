@@ -900,6 +900,49 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
         self.assertEqual(result.failure_reason, "vague_query")
 
+    def test_entity_attribute_validation_rejects_generic_and_conflicting_passages(self):
+        def run(query, text):
+            source = rag_pipeline.PromptSource(1, "scope.pdf", "Page 1", text, "scope.pdf")
+            return rag_pipeline.extract_evidence(rag_pipeline.PipelineTrace(
+                query=query, rewritten_query=query,
+                prompt=rag_pipeline.PromptResult("prompt", sources=(source,), context=text),
+            ))
+
+        explicit = run("Quel est le nombre d'instances INZsmart ?", "INZsmart comporte 12 instances.")
+        self.assertEqual(explicit.match_status, "EXPLICIT_ENTITY_ATTRIBUTE_MATCH")
+        self.assertEqual(len(explicit.passages), 1)
+
+        attribute_only = run("Quel est le nombre d'instances INZsmart ?", "L'audit CRBT contient 47 entrées.")
+        self.assertIn(attribute_only.match_status, {"ATTRIBUTE_ONLY_MATCH", "CONFLICTING_ENTITY_OR_ATTRIBUTE", "NO_EXPLICIT_EVIDENCE"})
+        self.assertEqual(attribute_only.status, "NO_EXPLICIT_EVIDENCE")
+
+        conflicting = run("What is the maximum SIMBOX cache age?", "VPN credentials remain valid for 90 days.")
+        self.assertEqual(conflicting.status, "NO_EXPLICIT_EVIDENCE")
+        self.assertIn(conflicting.match_status, {"CONFLICTING_ENTITY_OR_ATTRIBUTE", "NO_EXPLICIT_EVIDENCE"})
+
+    def test_same_section_adjacent_entity_allows_attribute_passage(self):
+        result = self._extract_from_text(
+            "What is the maximum SIMBOX cache age?",
+            "SIMBOX configuration. The maximum cache age is 30 days.",
+        )
+        self.assertEqual(result.match_status, "EXPLICIT_ENTITY_ATTRIBUTE_MATCH")
+        self.assertIn("30 days", result.passages[0].text)
+
+    def test_header_attribute_does_not_accept_trailer_passage(self):
+        result = self._extract_from_text(
+            "What is the MBF header version?",
+            "MBF trailer version is 2.0.",
+        )
+        self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
+
+    @staticmethod
+    def _extract_from_text(query, text):
+        source = rag_pipeline.PromptSource(1, "scope.pdf", "Page 1", text, "scope.pdf")
+        return rag_pipeline.extract_evidence(rag_pipeline.PipelineTrace(
+            query=query, rewritten_query=query,
+            prompt=rag_pipeline.PromptResult("prompt", sources=(source,), context=text),
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

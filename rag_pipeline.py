@@ -917,14 +917,18 @@ class EvidenceExtractionResult:
     supporting_source_ids: tuple[int, ...]
     explicit_evidence: bool
     failure_reason: str | None = None
+    match_status: str = "NO_EXPLICIT_EVIDENCE"
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": "1.0", "status": self.status, "query": self.query,
             "language": self.language, "passages": [p.to_json() for p in self.passages],
             "supporting_source_ids": list(self.supporting_source_ids),
             "explicit_evidence": self.explicit_evidence, "failure_reason": self.failure_reason,
         }
+        if self.match_status != "EXPLICIT_ENTITY_ATTRIBUTE_MATCH":
+            payload["match_status"] = self.match_status
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -1031,13 +1035,48 @@ def _evidence_match_features(query: str, passage: str) -> tuple[float, tuple[str
     return score, tuple(sorted(matched, key=lambda value: (value.casefold(), value)))
 
 
+_DIRECT_ENTITY_ALIASES = {
+    "inzsmart": ("inzsmart",), "simbox": ("simbox",), "vpn": ("vpn",),
+    "mbf": ("mbf", "mach billing format"), "cafeteria": ("cafeteria", "cafeterie", "caf t ria"),
+    "ggsn": ("ggsn",), "p2p": ("p2p",), "crbt": ("crbt",),
+    "huawei_msc": ("huawei msc", "huawei",),
+}
+_DIRECT_ATTRIBUTE_ALIASES = {
+    "count": ("count", "number", "nombre", "combien", "instances", "total"),
+    "duration": ("duration", "duree", "durée", "cache", "age", "maximum age", "maximal"),
+    "location": ("where", "located", "location", "situe", "situ", "etage", "étage", "floor", "tage"),
+    "opening_time": ("open", "opened", "ouverte", "opening", "hours", "hour", "when", "ouverture", "horaires", "heure"),
+    "approval": ("approve", "approval", "approuve", "approbation", "manager", "responsibility"),
+    "version": ("version", "specification"),
+    "parameter": ("parameter", "parametre", "paramètre", "duplicate", "doublon", "identifier"),
+    "header": ("header",),
+    "trailer": ("trailer",),
+    "document": ("document", "file", "filename", "described"),
+}
+
+
+def _evidence_entity_attribute_profile(query: str, passage: str) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Return named entities and factual attributes present in normalized text."""
+    nq, np = _normalize_evidence_text(query), _normalize_evidence_text(passage)
+    def has_alias(text: str, alias: str) -> bool:
+        pattern = r"\b" + re.escape(alias).replace(r"\ ", r"\s+") + r"\b"
+        return bool(re.search(pattern, text))
+    query_entities = {name for name, aliases in _DIRECT_ENTITY_ALIASES.items() if any(has_alias(nq, alias) for alias in aliases)}
+    query_attrs = {name for name, aliases in _DIRECT_ATTRIBUTE_ALIASES.items() if any(has_alias(nq, alias) for alias in aliases)}
+    passage_entities = {name for name, aliases in _DIRECT_ENTITY_ALIASES.items() if any(has_alias(np, alias) for alias in aliases)}
+    passage_attrs = {name for name, aliases in _DIRECT_ATTRIBUTE_ALIASES.items() if any(has_alias(np, alias) for alias in aliases)}
+    if re.search(r"\b\d{1,2}(?:h|:)\d{2}\b", passage, flags=re.IGNORECASE):
+        passage_attrs.add("opening_time")
+    return query_entities, query_attrs, passage_entities, passage_attrs
+
+
 def _classify_evidence_query(query: str) -> str:
     """Classify whether a query requests one or multiple explicit facts."""
 
     tokens = _normalize_evidence_text(query).split()
     interrogatives = {
         "qui", "who", "what", "which", "where", "when", "why", "how", "ou",
-        "quel", "quelle", "quels", "quelles", "combien",
+        "quel", "quelle", "quels", "quelles", "combien", "o",
     }
     interrogative_count = sum(token in interrogatives for token in tokens)
     if interrogative_count >= 2:
@@ -1083,6 +1122,46 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
             score, matched_terms = _evidence_match_features(query, passage)
             if score > 0 and matched_terms:
                 candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
+    query_entities, query_attributes, _, _ = _evidence_entity_attribute_profile(query, query)
+    query_fact_type = _classify_evidence_query(query)
+    validated_candidates: list[tuple[float, int, int, PromptSource, str, tuple[str, ...]]] = []
+    rejected_statuses: set[str] = set()
+    for candidate in candidates:
+        score, source_id, sentence_index, source, passage, matched_terms = candidate
+        _, _, passage_entities, passage_attributes = _evidence_entity_attribute_profile(query, passage)
+        source_sentences = _split_evidence_sentences(source.text)
+        adjacent_text = " ".join(
+            source_sentences[index]
+            for index in (sentence_index - 1, sentence_index + 1)
+            if 0 <= index < len(source_sentences)
+        )
+        heading_context = " ".join(
+            source_sentences[index]
+            for index in range(max(0, sentence_index - 3), sentence_index)
+        )
+        adjacent_entities = _evidence_entity_attribute_profile(query, adjacent_text)[2]
+        contextual_entities = _evidence_entity_attribute_profile(query, heading_context)[2]
+        entity_ok = not query_entities or bool(passage_entities & query_entities) or bool(adjacent_entities & query_entities) or bool(contextual_entities & query_entities)
+        attribute_ok = not query_attributes or bool(passage_attributes & query_attributes)
+        conflicting_entity = bool(query_entities and passage_entities and not (passage_entities & query_entities))
+        opposing_pairs = (
+            ({"location"}, {"opening_time"}),
+            ({"opening_time"}, {"location"}),
+            ({"header"}, {"trailer"}),
+        )
+        conflicting_attribute = query_fact_type == "single_fact" and any(
+            left & query_attributes and right & passage_attributes
+            for left, right in opposing_pairs
+        )
+        if conflicting_entity or conflicting_attribute:
+            rejected_statuses.add("CONFLICTING_ENTITY_OR_ATTRIBUTE")
+        elif query_entities and not entity_ok:
+            rejected_statuses.add("ATTRIBUTE_ONLY_MATCH")
+        elif query_attributes and not attribute_ok:
+            rejected_statuses.add("ENTITY_ONLY_MATCH")
+        else:
+            validated_candidates.append(candidate)
+    candidates = validated_candidates
     opening_time_query = bool(
         set(_normalize_evidence_text(query).split())
         & {"open", "opened", "opening", "openings", "hours", "hour", "when", "ouvert", "ouverte", "ouverture", "horaires", "horaire", "heure", "abierto", "abierta", "horario", "horarios"}
@@ -1118,29 +1197,36 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
     else:
         selected = []
         covered_terms: set[str] = set()
+        covered_attributes: set[str] = set()
         for candidate in candidates:
             if len(selected) >= max(1, max_passages):
                 break
             terms = set(candidate[5])
-            if selected and not terms.difference(covered_terms):
+            candidate_attributes = _evidence_entity_attribute_profile(query, candidate[4])[3] & query_attributes
+            terms.update(f"attribute:{attribute}" for attribute in candidate_attributes)
+            if selected and not terms.difference(covered_terms) and not candidate_attributes.difference(covered_attributes):
                 continue
             selected.append(candidate)
             covered_terms.update(terms)
+            covered_attributes.update(candidate_attributes)
     passages = tuple(
         EvidencePassage(f"E{index}", source.source_id, _evidence_source_hash(source), source.file_name, source.location, passage, sentence_index, round(score, 8), matched_terms)
         for index, (score, _source_id, sentence_index, source, passage, matched_terms) in enumerate(selected, 1)
     )
     source_ids = tuple(sorted({passage.source_id for passage in passages}))
     if not passages:
-        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, "no_query_supported_passage")
-    return EvidenceExtractionResult("EVIDENCE_FOUND", query, trace.language, passages, source_ids, True)
+        reason = next(iter(sorted(rejected_statuses)), "no_query_supported_passage")
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, reason, reason if reason in {"ATTRIBUTE_ONLY_MATCH", "ENTITY_ONLY_MATCH", "CONFLICTING_ENTITY_OR_ATTRIBUTE"} else "NO_EXPLICIT_EVIDENCE")
+    return EvidenceExtractionResult("EVIDENCE_FOUND", query, trace.language, passages, source_ids, True, None, "EXPLICIT_ENTITY_ATTRIBUTE_MATCH")
 
 
 def build_extractive_answer(evidence: EvidenceExtractionResult, language: str | None = None) -> ExtractiveAnswerResult:
     """Build an exact-text answer with deterministic source citations."""
 
     started = time.perf_counter()
-    if evidence.status != "EVIDENCE_FOUND" or not evidence.passages:
+    if evidence.status != "EVIDENCE_FOUND" or not evidence.passages or (
+        evidence.match_status and evidence.match_status != "EXPLICIT_ENTITY_ATTRIBUTE_MATCH"
+    ):
         return ExtractiveAnswerResult("NO_EXPLICIT_EVIDENCE", build_clarification_message(language or "French"), (), (), (), (), (), (time.perf_counter() - started) * 1000, failure_reason=evidence.failure_reason)
     answer_parts: list[str] = []
     records: list[dict[str, Any]] = []
