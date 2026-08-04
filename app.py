@@ -564,6 +564,20 @@ def direct_clarification_message(language):
     }.get(language, "Pouvez-vous préciser l'application, le document ou le contexte concerné ?")
 
 
+def direct_no_evidence_message(language, reason="no_explicit_evidence"):
+    if reason == "missing_requested_attribute":
+        if str(language or "").casefold() == "english":
+            return "The selected document mentions the subject, but it does not provide the requested information."
+        if str(language or "").casefold() == "spanish":
+            return "El documento seleccionado menciona el tema, pero no proporciona la informaciÃ³n solicitada."
+        return "Le document sÃ©lectionnÃ© mentionne le sujet, mais ne fournit pas l’information demandÃ©e."
+    if str(language or "").casefold() == "english":
+        return "I could not find explicit evidence for this question in the selected document."
+    if str(language or "").casefold() == "spanish":
+        return "No encontrÃ© evidencia explÃ­cita para esta pregunta en el documento seleccionado."
+    return "Je n’ai trouvÃ© aucune preuve explicite rÃ©pondant Ã  cette question dans le document sÃ©lectionnÃ©."
+
+
 def build_direct_localized_summary(query, evidence, language):
     """Build a conservative localized summary from explicit evidence values."""
     if evidence is None or not getattr(evidence, "passages", ()):
@@ -1485,11 +1499,22 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     st.stop()
 
             if extractive_route and answer_mode == "Direct answer":
+                evidence_failure_reason = (
+                    getattr(extractive_evidence, "failure_reason", None)
+                    if extractive_evidence is not None else "no_explicit_evidence"
+                )
+                direct_reason = (
+                    "missing_requested_attribute"
+                    if evidence_failure_reason == "ENTITY_ONLY_MATCH"
+                    else "no_explicit_evidence"
+                )
                 direct_response = (
                     extractive_result.answer_text
                     if extractive_result is not None
-                    else direct_clarification_message(current_lang)
+                    else direct_no_evidence_message(current_lang, direct_reason)
                 )
+                if extractive_result is not None and extractive_result.status != "ANSWER":
+                    direct_response = direct_no_evidence_message(current_lang, direct_reason)
                 with st.chat_message("assistant"):
                     st.caption(direct_answer_label(current_lang))
                     if direct_scope == "specific_document" and direct_document is not None:
@@ -1503,6 +1528,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     "content": direct_response,
                     "language": current_lang,
                     "actual_mode": "extractive",
+                    "direct_failure_reason": direct_reason,
                     "sources": [],
                 })
                 with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
@@ -1518,6 +1544,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                             if extractive_result is not None
                             else "NO_EXPLICIT_EVIDENCE"
                         ),
+                        "direct_failure_reason": direct_reason,
                         "sources_count": 0,
                         "direct_answer_scope": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
                         "direct_answer_document_id": direct_document_identity(direct_document) if direct_document is not None else None,

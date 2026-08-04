@@ -27,6 +27,7 @@ def _load_helpers():
         "direct_source_label",
         "direct_original_source_label",
         "direct_clarification_message",
+        "direct_no_evidence_message",
         "build_direct_localized_summary",
         "direct_document_identity",
         "build_direct_document_filter",
@@ -93,6 +94,23 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertEqual(helpers["direct_vague_message"]("English", "INZsmart"), "What would you like to know about INZsmart?")
         self.assertEqual(helpers["direct_vague_message"]("French", "INZsmart"), "Que souhaitez-vous savoir sur INZsmart ?")
         self.assertIn("INZsmart", helpers["direct_vague_message"]("Spanish", "INZsmart"))
+
+    def test_no_evidence_messages_are_reason_specific_and_localized(self):
+        message = _load_helpers()["direct_no_evidence_message"]
+        self.assertIn("explicit evidence", message("English"))
+        self.assertIn("preuve explicite", message("French"))
+        self.assertIn("evidencia explÃ­cita", message("Spanish"))
+        self.assertIn("does not provide", message("English", "missing_requested_attribute"))
+        self.assertIn("ne fournit pas", message("French", "missing_requested_attribute"))
+        self.assertIn("no proporciona", message("Spanish", "missing_requested_attribute"))
+
+    def test_direct_failure_reason_is_persisted_and_has_no_downstream_generation(self):
+        self.assertIn('"direct_failure_reason": direct_reason', APP_SOURCE)
+        start = APP_SOURCE.index("if extractive_route and answer_mode == \"Direct answer\":")
+        end = APP_SOURCE.index("prompt_result = rag_pipeline.build_production_prompt", start)
+        block = APP_SOURCE[start:end]
+        self.assertIn("direct_no_evidence_message", block)
+        self.assertNotIn("stream_generate(", block)
 
     def test_vague_route_precedes_retrieval_and_generation(self):
         self.assertIn('"actual_mode": "direct_vague_query"', APP_SOURCE)
