@@ -1044,7 +1044,7 @@ _DIRECT_ENTITY_ALIASES = {
 _DIRECT_ATTRIBUTE_ALIASES = {
     "count": ("count", "number", "nombre", "combien", "instances", "total"),
     "duration": ("duration", "duree", "durée", "cache", "age", "maximum age", "maximal"),
-    "location": ("where", "located", "location", "situe", "situ", "etage", "étage", "floor", "tage"),
+    "location": ("where", "located", "location", "situe", "situ", "trouve", "etage", "étage", "floor", "tage"),
     "opening_time": ("open", "opened", "ouverte", "opening", "hours", "hour", "when", "ouverture", "horaires", "heure"),
     "approval": ("approve", "approval", "approuve", "approbation", "manager", "responsibility"),
     "version": ("version", "specification"),
@@ -1209,6 +1209,7 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
             selected.append(candidate)
             covered_terms.update(terms)
             covered_attributes.update(candidate_attributes)
+        selected.sort(key=lambda item: (item[1], item[2], _normalize_evidence_text(item[4])))
     passages = tuple(
         EvidencePassage(f"E{index}", source.source_id, _evidence_source_hash(source), source.file_name, source.location, passage, sentence_index, round(score, 8), matched_terms)
         for index, (score, _source_id, sentence_index, source, passage, matched_terms) in enumerate(selected, 1)

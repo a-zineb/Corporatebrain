@@ -935,6 +935,29 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
 
+    def test_multi_target_location_and_hours_selects_one_passage_per_target(self):
+        text = "La cafétéria principale est située au 4ème étage. Elle est ouverte de 12h00 à 14h30. Un badge est valide 24 heures."
+        for query in (
+            "Où se trouve la cafétéria et quels sont ses horaires ?",
+            "Where is the cafeteria and when is it open?",
+        ):
+            result = self._extract_from_text(query, text)
+            self.assertEqual(result.status, "EVIDENCE_FOUND", query)
+            self.assertEqual(len(result.passages), 2, query)
+            joined = " ".join(passage.text for passage in result.passages)
+            self.assertIn("4ème étage", joined)
+            self.assertIn("12h00 à 14h30", joined)
+            self.assertNotIn("badge", joined)
+            self.assertEqual(len({passage.text for passage in result.passages}), 2)
+
+    def test_multi_target_order_and_single_target_regression(self):
+        text = "La cafétéria principale est située au 4ème étage. Elle est ouverte de 12h00 à 14h30."
+        combined = self._extract_from_text("Where is the cafeteria and when is it open?", text)
+        self.assertEqual([p.sentence_index for p in combined.passages], [0, 1])
+        self.assertEqual(len(self._extract_from_text("Where is the cafeteria?", text).passages), 1)
+        self.assertIn("4ème étage", self._extract_from_text("Where is the cafeteria?", text).passages[0].text)
+        self.assertIn("12h00", self._extract_from_text("When is the cafeteria open?", text).passages[0].text)
+
     @staticmethod
     def _extract_from_text(query, text):
         source = rag_pipeline.PromptSource(1, "scope.pdf", "Page 1", text, "scope.pdf")
