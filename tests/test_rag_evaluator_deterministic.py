@@ -920,6 +920,37 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         self.assertEqual(conflicting.status, "NO_EXPLICIT_EVIDENCE")
         self.assertIn(conflicting.match_status, {"CONFLICTING_ENTITY_OR_ATTRIBUTE", "NO_EXPLICIT_EVIDENCE"})
 
+    def test_technical_attribute_values_reject_headings_and_accept_explicit_values(self):
+        cases = (
+            ("What is the specification version?", "Introduction. Version 2.3.", True),
+            ("What is the specification version?", "Introduction. Version is described below.", False),
+            ("What is the filename pattern?", "Filename pattern: GGSN_*.dat", True),
+            ("What is the filename pattern?", "Fichier source: GGSN.docx", False),
+            ("What table is used?", "The table is used for processing.", False),
+            ("What table is used?", "The MZ_PARAM table is used.", True),
+            ("What protocol is used?", "Files are distributed to consumers.", False),
+            ("What protocol is used?", "Files are sent over SFTP.", True),
+            ("What port is configured?", "The parameter value is 30 days.", False),
+            ("What port is configured?", "SFTP port 22.", True),
+            ("How often are files collected?", "Files are collected every 5 minutes.", True),
+            ("How often are files collected?", "Collection workflow overview.", False),
+        )
+        for query, text, expected in cases:
+            result = self._extract_from_text(query, text)
+            self.assertEqual(result.status == "EVIDENCE_FOUND", expected, query + " / " + text)
+
+    def test_duplicate_mechanism_and_cache_age_remain_supported(self):
+        duplicate = self._extract_from_text(
+            "How are duplicate files detected?",
+            "Duplicate Batch Check uses CRC verification and PARAM_CHECK_DUP_BATCH.",
+        )
+        self.assertEqual(duplicate.status, "EVIDENCE_FOUND")
+        cache = self._extract_from_text(
+            "What is the maximum cache age?",
+            "The maximum cache age is 30 days.",
+        )
+        self.assertEqual(cache.status, "EVIDENCE_FOUND")
+
     def test_same_section_adjacent_entity_allows_attribute_passage(self):
         result = self._extract_from_text(
             "What is the maximum SIMBOX cache age?",

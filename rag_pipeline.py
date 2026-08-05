@@ -1070,6 +1070,54 @@ def _evidence_entity_attribute_profile(query: str, passage: str) -> tuple[set[st
     return query_entities, query_attrs, passage_entities, passage_attrs
 
 
+def _technical_attribute_value_status(query: str, passage: str) -> str | None:
+    """Validate that technical attributes include an explicit value."""
+    nq = _normalize_evidence_text(query)
+    np = _normalize_evidence_text(passage)
+    if re.search(r"\bfichier source\s*:", passage, flags=re.IGNORECASE) or re.search(r"\bpath\s+filename\b", np):
+        if any(term in nq for term in ("filename", "pattern", "version", "server", "hostname", "host")):
+            return "METADATA_ONLY_MATCH"
+    if "version" in nq or "revision" in nq or "release" in nq:
+        if re.search(r"\b(?:v\s*)?\d+(?:\.\d+)+[a-z]?\b", passage, flags=re.IGNORECASE) and not re.search(r"\bfichier source\s*:", passage, flags=re.IGNORECASE) and not re.search(r"table des matieres|table of contents", np):
+            return None
+        return "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    if any(term in nq for term in ("filename pattern", "modele de nom de fichier", "file name pattern", "pattern")):
+        if re.search(r"(?:\^?[A-Za-z0-9][A-Za-z0-9_.-]*[_*?][A-Za-z0-9_.*?-]*|\^?[A-Za-z0-9_]+\[.*?\]|pattern\s*=)", passage, flags=re.IGNORECASE):
+            return None
+        return "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    if any(term in nq for term in ("duplicate", "doublon", "dupliqu", "duplication")):
+        if any(term in np for term in ("param_check_dup_batch", "duplicate batch check", "crc", "controle de redondance cyclique", "vérification des doublons")) and not re.search(r"table des matieres|table of contents", np):
+            return None
+        return "HEADING_ONLY_MATCH" if len(np.split()) < 24 or "table des matieres" in np else "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    if any(term in nq for term in ("directory", "repertoire", "répertoire", "folder", "path", "chemin")):
+        if re.search(r"(?:[A-Za-z]:\\|/(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+|(?:s?ftp|https?)://[^\s]+)", passage, flags=re.IGNORECASE):
+            return None
+        return "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    if "table" in nq:
+        if "table des matieres" in np or "table of contents" in np:
+            return "HEADING_ONLY_MATCH"
+        if re.search(r"\b(?:[A-Z][A-Z0-9_]{2,}|[A-Za-z0-9_]+\.[A-Za-z0-9_]+)\b", passage):
+            return None
+        return "HEADING_ONLY_MATCH"
+    if any(term in nq for term in ("server", "hostname", "host")):
+        if re.search(r"\b(?:[A-Za-z][A-Za-z0-9-]*\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3}|[A-Za-z]+\d{2,})\b", passage):
+            return None
+        return "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    if "protocol" in nq:
+        if re.search(r"\b(?:ftp|sftp|http|https|tcp|udp|nfs)\b", np, flags=re.IGNORECASE):
+            return None
+        return "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    if "port" in nq:
+        if re.search(r"\bport\s*[:=]?\s*[1-9]\d{1,4}\b|\b(?:sftp|ftp|http|https)\s*[:=]\s*[1-9]\d{1,4}\b", passage, flags=re.IGNORECASE):
+            return None
+        return "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    if any(term in nq for term in ("how often", "frequency", "schedule", "frequence", "fréquence")):
+        if re.search(r"\b(?:every|daily|weekly|monthly|minutes?|hours?|jours?|quotidien|cron)\b|\b\d{1,2}:\d{2}\b", np, flags=re.IGNORECASE):
+            return None
+        return "ATTRIBUTE_PRESENT_VALUE_MISSING"
+    return None
+
+
 def _classify_evidence_query(query: str) -> str:
     """Classify whether a query requests one or multiple explicit facts."""
 
@@ -1120,6 +1168,12 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
                 continue
             seen.add(key)
             score, matched_terms = _evidence_match_features(query, passage)
+            technical_request = any(
+                term in _normalize_evidence_text(query)
+                for term in ("protocol", "port", "hostname", "server", "table", "directory", "repertoire", "filename pattern", "frequency", "schedule")
+            )
+            if score == 0 and technical_request and _technical_attribute_value_status(query, passage) is None:
+                score, matched_terms = 0.01, ("technical_explicit_value",)
             if score > 0 and matched_terms:
                 candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
     query_entities, query_attributes, _, _ = _evidence_entity_attribute_profile(query, query)
@@ -1128,6 +1182,10 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
     rejected_statuses: set[str] = set()
     for candidate in candidates:
         score, source_id, sentence_index, source, passage, matched_terms = candidate
+        technical_status = _technical_attribute_value_status(query, passage)
+        if technical_status is not None:
+            rejected_statuses.add(technical_status)
+            continue
         _, _, passage_entities, passage_attributes = _evidence_entity_attribute_profile(query, passage)
         source_sentences = _split_evidence_sentences(source.text)
         adjacent_text = " ".join(
