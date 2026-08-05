@@ -211,6 +211,19 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         ):
             self.assertTrue(suitable(query), query)
 
+    def test_technical_attribute_queries_are_suitable_for_direct_answer(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        for query in (
+            "What is the specification version?",
+            "What is the filename pattern?",
+            "How are duplicate files detected?",
+            "What is the input directory?",
+            "Where are output files written?",
+            "Quelle est la version de la spécification ?",
+            "¿Cuál es el patrón de nombre de archivo?",
+        ):
+            self.assertTrue(suitable(query), query)
+
     def test_explanatory_and_comparative_variants_remain_unsuitable(self):
         suitable = _load_helpers()["is_direct_answer_suitable"]
         for query in (

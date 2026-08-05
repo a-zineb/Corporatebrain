@@ -98,7 +98,16 @@ def is_direct_answer_suitable(query):
     )
     if any(marker in normalized for marker in unsuitable):
         return False
-    if re.search(r"\bhow\b", normalized) and "how many" not in normalized:
+    technical_attribute_markers = (
+        "version", "filename pattern", "duplicate detection", "duplicate check", "duplicate files", "duplicates", "parameter",
+        "configuration parameter", "input directory", "output directory", "folder", "path",
+        "cache age", "duration", "schedule", "frequency", "table", "server", "hostname",
+        "protocol", "port", "modele de fichier", "detection des doublons", "parametre",
+        "repertoire d entree", "repertoire de sortie", "dossier", "chemin", "duree",
+        "horario", "frecuencia", "servidor", "protocolo", "puerto", "patron de nombre de archivo", "patron",
+    )
+    technical_attribute_query = any(marker in normalized for marker in technical_attribute_markers)
+    if re.search(r"\bhow\b", normalized) and "how many" not in normalized and not technical_attribute_query:
         return False
     concise_factual_patterns = (
         r"\b(?:total|number of|count|nombre total|numero de|combien)\b",
@@ -107,6 +116,8 @@ def is_direct_answer_suitable(query):
         r"\b(?:what approval|who approves|quelle approbation|que aprobacion|aprobacion)\b",
         r"\b(?:maximum(?:\s+\w+){0,2}\s+duration|cache age|duree maximale|duracion maxima)\b",
         r"\b(?:version|specification version|version de especificacion)\b",
+        r"\b(?:filename pattern|duplicate detection|duplicate check|duplicate files|parameter|configuration parameter|input directory|output directory|folder|path|cache age|duration|schedule|frequency|table|server|hostname|protocol|port)\b",
+        r"\b(?:modele de fichier|detection des doublons|parametre|repertoire d entree|repertoire de sortie|dossier|chemin|duree|frequence|serveur|protocole|puerto|patron de nombre de archivo|patron)\b",
     )
     if any(re.search(pattern, normalized) for pattern in concise_factual_patterns):
         return True
