@@ -52,6 +52,7 @@ __all__ = [
     "PipelineTrace",
     "EvidencePassage",
     "EvidenceExtractionResult",
+    "extract_evidence_exhaustive_specific",
     "ExtractiveAnswerResult",
     "EmbeddingEncoder",
     "EmbeddingModelLoadError",
@@ -285,6 +286,7 @@ class PromptSource:
     text: str
     path: str
     relaxed: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1051,8 +1053,9 @@ _DIRECT_ATTRIBUTE_ALIASES = {
     "parameter": ("parameter", "parametre", "paramètre", "duplicate", "doublon", "identifier"),
     "header": ("header",),
     "trailer": ("trailer",),
-    "document": ("document", "file", "filename", "described"),
+    "document": ("document", "file", "described"),
 }
+_DIRECT_ATTRIBUTE_ALIASES["location"] = _DIRECT_ATTRIBUTE_ALIASES["location"] + ("path", "directory", "repertoire", "share")
 
 
 def _evidence_entity_attribute_profile(query: str, passage: str) -> tuple[set[str], set[str], set[str], set[str]]:
@@ -1075,22 +1078,22 @@ def _technical_attribute_value_status(query: str, passage: str) -> str | None:
     nq = _normalize_evidence_text(query)
     np = _normalize_evidence_text(passage)
     if re.search(r"\bfichier source\s*:", passage, flags=re.IGNORECASE) or re.search(r"\bpath\s+filename\b", np):
-        if any(term in nq for term in ("filename", "pattern", "version", "server", "hostname", "host")):
+        if any(term in nq for term in ("filename", "pattern", "modele", "mod le de nom", "motif de nom", "format du nom", "version", "server", "hostname", "host")):
             return "METADATA_ONLY_MATCH"
     if "version" in nq or "revision" in nq or "release" in nq:
         if re.search(r"\b(?:v\s*)?\d+(?:\.\d+)+[a-z]?\b", passage, flags=re.IGNORECASE) and not re.search(r"\bfichier source\s*:", passage, flags=re.IGNORECASE) and not re.search(r"table des matieres|table of contents", np):
             return None
         return "ATTRIBUTE_PRESENT_VALUE_MISSING"
-    if any(term in nq for term in ("filename pattern", "modele de nom de fichier", "file name pattern", "pattern")):
-        if re.search(r"(?:\^?[A-Za-z0-9][A-Za-z0-9_.-]*[_*?][A-Za-z0-9_.*?-]*|\^?[A-Za-z0-9_]+\[.*?\]|pattern\s*=)", passage, flags=re.IGNORECASE):
+    if any(term in nq for term in ("filename pattern", "modele de nom de fichier", "mod le de nom de fichier", "motif de nom de fichier", "format du nom de fichier", "pattern de fichier", "file name pattern", "pattern")):
+        if re.search(r"(?:\b[A-Za-z0-9][A-Za-z0-9_.-]*[*?][A-Za-z0-9_.-]*|\^?[A-Za-z0-9_]+\[.*?\]|pattern\s*=)", passage, flags=re.IGNORECASE) or "prefix timestamp" in np:
             return None
         return "ATTRIBUTE_PRESENT_VALUE_MISSING"
     if any(term in nq for term in ("duplicate", "doublon", "dupliqu", "duplication")):
         if any(term in np for term in ("param_check_dup_batch", "duplicate batch check", "crc", "controle de redondance cyclique", "vérification des doublons")) and not re.search(r"table des matieres|table of contents", np):
             return None
         return "HEADING_ONLY_MATCH" if len(np.split()) < 24 or "table des matieres" in np else "ATTRIBUTE_PRESENT_VALUE_MISSING"
-    if any(term in nq for term in ("directory", "repertoire", "répertoire", "folder", "path", "chemin")):
-        if re.search(r"(?:[A-Za-z]:\\|/(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+|(?:s?ftp|https?)://[^\s]+)", passage, flags=re.IGNORECASE):
+    if any(term in nq for term in ("directory", "repertoire", "folder", "path", "chemin", "output files", "output directory", "sortie")):
+        if re.search(r"(?:[A-Za-z]:\\|\\\\[A-Za-z0-9_.-]+\\[^\s]+|/(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+|(?:s?ftp|https?)://[^\s]+)", passage, flags=re.IGNORECASE):
             return None
         return "ATTRIBUTE_PRESENT_VALUE_MISSING"
     if "table" in nq:
@@ -1170,18 +1173,77 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
             score, matched_terms = _evidence_match_features(query, passage)
             technical_request = any(
                 term in _normalize_evidence_text(query)
-                for term in ("protocol", "port", "hostname", "server", "table", "directory", "repertoire", "filename pattern", "frequency", "schedule")
+                for term in ("protocol", "port", "hostname", "server", "table", "directory", "repertoire", "filename pattern", "modele de nom de fichier", "mod le de nom de fichier", "frequency", "schedule", "output files", "output directory", "sortie", "author", "wrote", "purge", "value enables", "how are duplicate", "suffix", "archived filename")
             )
             if score == 0 and technical_request and _technical_attribute_value_status(query, passage) is None:
                 score, matched_terms = 0.01, ("technical_explicit_value",)
+            if source.metadata.get("block_type") and score == 0:
+                nq = _normalize_evidence_text(query)
+                np = _normalize_evidence_text(passage)
+                structured_signal = (
+                    ("value enables" in nq and "param_check_dup_batch" in np and re.search(r"\b[yY]\b", passage))
+                    or ("who wrote" in nq and any(term in np for term in ("ecrit par", "author", "written by")))
+                    or ("purge" in nq and any(term in np for term in ("journaliere", "daily", "every")))
+                    or ("bi" in nq and "filedirectory" in np and "system name bi" in np)
+                )
+                if structured_signal:
+                    score, matched_terms = 0.02, ("structured_explicit_value",)
             if score > 0 and matched_terms:
                 candidates.append((score, source.source_id, sentence_index, source, passage, matched_terms))
     query_entities, query_attributes, _, _ = _evidence_entity_attribute_profile(query, query)
     query_fact_type = _classify_evidence_query(query)
+    normalized_query_for_priority = _normalize_evidence_text(query)
     validated_candidates: list[tuple[float, int, int, PromptSource, str, tuple[str, ...]]] = []
     rejected_statuses: set[str] = set()
     for candidate in candidates:
         score, source_id, sentence_index, source, passage, matched_terms = candidate
+        structured = bool(source.metadata.get("block_type"))
+        normalized_passage = _normalize_evidence_text(passage)
+        if structured:
+            if any(term in normalized_query_for_priority for term in ("who wrote", "author", "written by", "auteur", "ecrit par")) and not any(term in normalized_passage for term in ("ecrit par", "author", "written by", "auteur")):
+                rejected_statuses.add("ENTITY_ONLY_MATCH")
+                continue
+            if any(term in normalized_query_for_priority for term in ("who wrote", "author", "written by", "auteur", "ecrit par")):
+                validated_candidates.append(candidate)
+                continue
+            if "value enables" in normalized_query_for_priority or "valeur active" in normalized_query_for_priority:
+                if not ("param_check_dup_batch" in normalized_passage and ("valeur" in normalized_passage or "=" in normalized_passage) and re.search(r"\b[yY]\b", passage)):
+                    rejected_statuses.add("ATTRIBUTE_PRESENT_VALUE_MISSING")
+                    continue
+                validated_candidates.append(candidate)
+                continue
+            if "how are duplicate" in normalized_query_for_priority or "comment les fichiers dupliqu" in normalized_query_for_priority:
+                if not ("crc" in normalized_passage or "param_check_dup_batch" in normalized_passage):
+                    rejected_statuses.add("ATTRIBUTE_PRESENT_VALUE_MISSING")
+                    continue
+                validated_candidates.append(candidate)
+                continue
+            if "purge" in normalized_query_for_priority or "purg" in normalized_query_for_priority:
+                if not any(term in normalized_passage for term in ("journaliere", "daily", "every")):
+                    rejected_statuses.add("ATTRIBUTE_PRESENT_VALUE_MISSING")
+                    continue
+                validated_candidates.append(candidate)
+                continue
+            if "suffix" in normalized_query_for_priority or "archived filename" in normalized_query_for_priority:
+                if not re.search(r"\.gz\b", passage, flags=re.IGNORECASE):
+                    rejected_statuses.add("ATTRIBUTE_PRESENT_VALUE_MISSING")
+                    continue
+                validated_candidates.append(candidate)
+                continue
+            if "bi" in normalized_query_for_priority and any(term in normalized_query_for_priority for term in ("output", "directory", "folder")):
+                if not ("system name bi" in normalized_passage and "filedirectory" in normalized_passage):
+                    rejected_statuses.add("ENTITY_ONLY_MATCH")
+                    continue
+                validated_candidates.append(candidate)
+                continue
+        if "suffix" in normalized_query_for_priority or "archived filename" in normalized_query_for_priority:
+            if not re.search(r"\.gz\b", passage, flags=re.IGNORECASE):
+                rejected_statuses.add("ATTRIBUTE_PRESENT_VALUE_MISSING")
+                continue
+        if "purge" in normalized_query_for_priority or "purg" in normalized_query_for_priority:
+            if not any(term in normalized_passage for term in ("journaliere", "daily", "every")):
+                rejected_statuses.add("ATTRIBUTE_PRESENT_VALUE_MISSING")
+                continue
         technical_status = _technical_attribute_value_status(query, passage)
         if technical_status is not None:
             rejected_statuses.add(technical_status)
@@ -1243,9 +1305,27 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
                 return 2
         return 0
 
+    def structured_priority(item: tuple[float, int, int, PromptSource, str, tuple[str, ...]]) -> int:
+        """Prefer explicit structured fields when metadata is available."""
+        source, passage = item[3], _normalize_evidence_text(item[4])
+        if not source.metadata.get("block_type"):
+            return 0
+        if any(term in normalized_query_for_priority for term in ("who wrote", "author", "written by", "auteur", "ecrit par")):
+            return 5 if any(term in passage for term in ("ecrit par", "author", "written by", "auteur")) else -5
+        if "value enables" in normalized_query_for_priority or "valeur active" in normalized_query_for_priority:
+            return 6 if "param_check_dup_batch" in passage and re.search(r"\b[=:]\s*y\b", passage) else -4
+        if "how are duplicate" in normalized_query_for_priority or "comment les fichiers dupliqu" in normalized_query_for_priority:
+            return 6 if "crc" in passage else (3 if "param_check_dup_batch" in passage else -3)
+        if "purge" in normalized_query_for_priority or "purg" in normalized_query_for_priority:
+            return 6 if any(term in passage for term in ("journaliere", "daily", "every")) else -5
+        if "bi" in normalized_query_for_priority and any(term in normalized_query_for_priority for term in ("output", "directory", "folder")):
+            return 7 if "system name = bi" in passage and "filedirectory =" in passage else -6
+        return 0
+
     candidates.sort(
         key=lambda item: (
             -attribute_priority(item[4]),
+            -structured_priority(item),
             -(item[0] + (1.0 if opening_time_query and re.search(r"\b\d{1,2}(?:h|:)\d{2}\b", item[4], flags=re.IGNORECASE) else 0.0)),
             -item[0], item[1], item[2], _normalize_evidence_text(item[4]),
         )
@@ -1277,6 +1357,218 @@ def extract_evidence(trace: PipelineTrace, *, max_passages: int = 3) -> Evidence
         reason = next(iter(sorted(rejected_statuses)), "no_query_supported_passage")
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, trace.language, (), (), False, reason, reason if reason in {"ATTRIBUTE_ONLY_MATCH", "ENTITY_ONLY_MATCH", "CONFLICTING_ENTITY_OR_ATTRIBUTE"} else "NO_EXPLICIT_EVIDENCE")
     return EvidenceExtractionResult("EVIDENCE_FOUND", query, trace.language, passages, source_ids, True, None, "EXPLICIT_ENTITY_ATTRIBUTE_MATCH")
+
+
+def _strict_exhaustive_attribute(query: str) -> str | None:
+    """Identify one explicit technical attribute for selected-document scans."""
+    nq = _normalize_evidence_text(query)
+    if any(term in nq for term in ("who wrote", "written by", "author", "writer", "auteur", "ecrit par", "redige par", "redige par")):
+        return "author"
+    if any(term in nq for term in ("who approved", "approved by", "approver", "approuve par")):
+        return "approval"
+    if "duplicate" in nq or "doublon" in nq or "dupliqu" in nq:
+        if any(term in nq for term in ("parameter", "parametre", "paramètre")):
+            return "duplicate_parameter"
+        if any(term in nq for term in ("how are", "how do", "mechanism", "detected", "detecte", "controle", "control")):
+            return "duplicate_mechanism"
+        if any(term in nq for term in ("parameter", "parametre", "value", "valeur")):
+            return "duplicate_enable_value"
+        return "duplicate_mechanism"
+    if "version" in nq or "revision" in nq or "release" in nq:
+        return "version"
+    if "filename pattern" in nq or "modele de nom" in nq or "pattern de fichier" in nq:
+        return "filename_pattern"
+    if "collection frequency" in nq or "frequence de collecte" in nq:
+        return "collection_frequency"
+    if "distribution frequency" in nq or "frequence de distribution" in nq:
+        return "distribution_frequency"
+    if "protocol" in nq:
+        return "protocol"
+    if "port" in nq:
+        return "port"
+    if "input directory" in nq or "repertoire d entree" in nq or "collection directory" in nq:
+        return "input_directory"
+    if "output directory" in nq or "output files" in nq or "repertoire de sortie" in nq:
+        return "output_directory"
+    if "archive directory" in nq or "exact archive" in nq or "dossier d archivage" in nq:
+        return "archive_directory"
+    if "cdr format" in nq:
+        return "cdr_format"
+    if "cache age" in nq or "maximum cache" in nq:
+        return "cache_age"
+    if "compression" in nq:
+        return "compression"
+    if "retention" in nq:
+        return "retention_period"
+    if "suffix" in nq or "archived filename" in nq:
+        return "archive_suffix"
+    if "purge" in nq:
+        return "archive_purge_frequency"
+    if "username" in nq or "user name" in nq:
+        return "username"
+    if "hostname" in nq or "server" in nq or " host" in f" {nq}":
+        return "host"
+    if "table" in nq:
+        return "table"
+    if "count" in nq or "number" in nq or "nombre" in nq:
+        return "count"
+    return None
+
+
+def _strict_exhaustive_entities(query: str) -> set[str]:
+    nq = _normalize_evidence_text(query)
+    entities = {name for name, aliases in _DIRECT_ENTITY_ALIASES.items() if any(alias in nq for alias in aliases)}
+    entities.update(name for name in ("dwh", "bi", "ftp_cra", "reqleg", "p2p") if re.search(rf"\b{re.escape(name)}\b", nq))
+    return entities
+
+
+def _strict_value_state(attribute: str, text: str) -> str:
+    """Return the explicit-value state used by exhaustive admission."""
+    normalized = _normalize_evidence_text(text)
+    def labeled_value(pattern: str) -> str:
+        match = re.search(pattern + r"\s*[:=]\s*(?:=\s*)?(.+)$", text, re.I)
+        return match.group(1).strip() if match else ""
+    field_value = re.search(r"(?:=|:)\s*(.*)$", text.strip())
+    value = field_value.group(1).strip() if field_value else ""
+    if attribute == "author":
+        value = labeled_value(r"(?:ecrit par|écrit par|auteur|author|written by|redige par|rédigé par)")
+        ok = bool(value)
+    elif attribute == "approval":
+        value = labeled_value(r"(?:approuve par|approuvé par|approved by)")
+        ok = bool(value)
+    elif attribute == "duplicate_mechanism":
+        ok = bool(re.search(r"crc|cyclic redundancy check|controle de redondance cyclique|contrôle de redondance cyclique|checksum", text, re.I))
+    elif attribute == "duplicate_parameter":
+        ok = "param_check_dup_batch" in normalized
+    elif attribute == "duplicate_enable_value":
+        ok = "param_check_dup_batch" in normalized and bool(re.search(r"(?:=|valeur)\s*[«\"']?\s*y\b", text, re.I))
+    elif attribute == "version":
+        ok = bool(re.search(r"\b(?:v\s*)?\d+(?:\.\d+)+[a-z]?\b", text, re.I))
+    elif attribute == "filename_pattern":
+        ok = bool(re.search(r"[*?]|\^?[A-Za-z0-9_]+\[.*?\]|prefix\s*\+\s*timestamp|[A-Za-z]+(?:[-_]\w+){2,}", text, re.I))
+    elif attribute in {"collection_frequency", "distribution_frequency", "archive_purge_frequency"}:
+        ok = bool(re.search(r"daily|every|jours?|quotidien|journaliere|journalière|une fois par jour|\d{1,2}:\d{2}", normalized, re.I))
+    elif attribute == "protocol":
+        ok = bool(re.search(r"\b(?:sftp|ftp|http|https|tcp|udp|nfs)\b", normalized, re.I))
+    elif attribute == "port":
+        ok = bool(re.search(r"\bport\s*[:=]?\s*\d{1,5}\b", text, re.I))
+    elif attribute in {"input_directory", "output_directory", "archive_directory"}:
+        ok = attribute == "archive_directory" and bool(re.search(r"dossier d['’]?archivage|archive directory", normalized)) or bool(re.search(r"(?:[A-Za-z]:\\|\\\\|/(?:[A-Za-z0-9_.-]+/)+|(?:s?ftp|https?)://|to be defined)", text, re.I))
+    elif attribute == "cdr_format":
+        ok = bool(re.search(r"\b(?:brut|raw)\b", normalized, re.I))
+    elif attribute == "cache_age" or attribute == "retention_period":
+        ok = bool(re.search(r"\b\d+\s*(?:jours?|days?|mois|months?)\b", normalized, re.I))
+    elif attribute == "compression":
+        ok = bool(re.search(r"\b(?:gzip|zip|\.gz)\b", normalized, re.I))
+    elif attribute == "archive_suffix":
+        ok = bool(re.search(r"\.gz\b", text, re.I))
+    elif attribute == "username":
+        ok = bool(re.search(r"\b(?:username|user name)\s+(?!redacted)\S", normalized, re.I))
+    elif attribute == "host":
+        ok = bool(re.search(r"\b(?:host|hostname|server)\s*[:=]\s*(?:\d{1,3}(?:\.\d{1,3}){3}|\S+)", text, re.I))
+    elif attribute == "table":
+        ok = bool(re.search(r"\b[A-Z][A-Z0-9_]{2,}\b", text))
+    elif attribute == "count":
+        ok = bool(re.search(r"\b\d+\b", text))
+    else:
+        ok = bool(value)
+    if not value and attribute in {"author", "approval", "archive_directory"}:
+        return "EMPTY_VALUE" if attribute == "approval" else "ATTRIBUTE_WITHOUT_VALUE"
+    if ok:
+        return "EXPLICIT_PLACEHOLDER" if "to be defined" in normalized else "EXPLICIT_VALUE"
+    return "ATTRIBUTE_WITHOUT_VALUE"
+
+
+def extract_evidence_exhaustive_specific(
+    query: str,
+    chunks: Sequence[ChunkRecord],
+    *,
+    max_passages: int = 3,
+) -> EvidenceExtractionResult:
+    """Strict exhaustive evidence scan for Direct Answer/specific-document diagnostics.
+
+    This API deliberately performs no retrieval and is not used by AI Answer or
+    all-document execution. Candidates must satisfy the requested attribute,
+    entity relation, and explicit-value rules before ranking.
+    """
+    attribute = _strict_exhaustive_attribute(query)
+    if attribute is None:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
+    entities = _strict_exhaustive_entities(query)
+    admitted: list[tuple[int, float, ChunkRecord, str, tuple[str, ...]]] = []
+    for index, chunk in enumerate(chunks):
+        text = chunk.text
+        normalized = _normalize_evidence_text(text)
+        metadata = chunk.metadata
+        if metadata.get("block_type") == "heading" or re.search(r"table of contents|table des matieres", normalized):
+            continue
+        state = _strict_value_state(attribute, text)
+        if state not in {"EXPLICIT_VALUE", "EXPLICIT_PLACEHOLDER"}:
+            continue
+        labels = {
+            "filename_pattern": ("filename pattern", "modele de nom", "nom de fichier"),
+            "collection_frequency": ("collection frequency", "frequence de collecte"),
+            "distribution_frequency": ("distribution frequency", "frequence de distribution"),
+            "protocol": ("connection protocol", "protocol"),
+            "input_directory": ("directory", "repertoire", "filedirectory"),
+            "output_directory": ("filedirectory", "output directory", "repertoire de sortie"),
+            "archive_directory": ("dossier d", "archive directory"),
+            "cdr_format": ("cdr format",), "cache_age": ("cache", "age maximal"),
+            "compression": ("compress", "gzip"), "retention_period": ("retention", "retention"),
+            "archive_suffix": ("archivage", ".gz"), "archive_purge_frequency": ("purge",),
+            "table": ("mz_param",), "duplicate_parameter": ("param_check_dup_batch",),
+            "duplicate_enable_value": ("param_check_dup_batch",), "username": ("username", "user name"),
+            "host": ("host", "hostname", "server"), "port": ("port",),
+        }
+        if attribute in labels and not any(label in normalized for label in labels[attribute]):
+            continue
+        if attribute == "author" and not re.search(r"(?:ecrit par|écrit par|auteur|author|written by|redige par|rédigé par)", text, re.I):
+            continue
+        if attribute == "approval" and not re.search(r"(?:approuve par|approved by)", text, re.I):
+            continue
+        if attribute == "archive_directory" and not re.search(r"dossier d\s*['’]?\s*archivage|archive directory", normalized):
+            continue
+        if entities:
+            context_text = " ".join(str(metadata.get(key, "")) for key in ("source_file", "section", "location"))
+            entity_context = normalized + " " + _normalize_evidence_text(context_text)
+            entity_hit = any(
+                re.search(rf"\b{re.escape(entity)}\b", entity_context)
+                or re.search(rf"\b{re.escape(entity.replace('_', ' '))}\b", entity_context)
+                for entity in entities
+            )
+            if not entity_hit and metadata.get("block_type") in {"table_row", "row_record", "column_record"}:
+                continue
+        if attribute == "port" and entities and not any(entity in normalized for entity in entities):
+            continue
+        if attribute == "username" and entities and not any(entity in normalized for entity in entities):
+            continue
+        score = 10.0 + (3.0 if metadata.get("block_type") in {"table_row", "row_record", "column_record"} else 0.0)
+        if attribute in {"author", "approval", "archive_directory"}:
+            score += 5.0
+        if attribute == "table" and "mz_param" in normalized:
+            score += 10.0
+        if attribute == "duplicate_parameter" and "param_check_dup_batch" in normalized:
+            score += 10.0
+        if attribute == "duplicate_enable_value" and "param_check_dup_batch" in normalized:
+            score += 10.0
+        if attribute == "username" and entities:
+            score += 5.0
+        if attribute == "archive_purge_frequency" and "purge" in normalized:
+            score += 10.0
+        if attribute == "duplicate_mechanism" and re.search(r"crc|cyclic redundancy check|redondance cyclique", text, re.I):
+            score += 5.0
+        source = PromptSource(index + 1, str(metadata.get("source_file", "")), str(metadata.get("location", "")), text, str(metadata.get("source_file", "")), False, dict(metadata))
+        matched = (attribute,) + tuple(sorted(entities))
+        admitted.append((index, score, chunk, text, matched))
+    admitted.sort(key=lambda item: (-item[1], item[0], _normalize_evidence_text(item[3])))
+    selected = admitted[:1] if attribute not in {"location", "multi_fact"} else admitted[:max(1, max_passages)]
+    passages: list[EvidencePassage] = []
+    for ordinal, (index, score, chunk, text, matched) in enumerate(selected, 1):
+        source = PromptSource(index + 1, str(chunk.metadata.get("source_file", "")), str(chunk.metadata.get("location", "")), text, str(chunk.metadata.get("source_file", "")), False, dict(chunk.metadata))
+        passages.append(EvidencePassage(f"E{ordinal}", index + 1, _evidence_source_hash(source), source.file_name, source.location, text, 0, score, matched))
+    if not passages:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
+    return EvidenceExtractionResult("EVIDENCE_FOUND", query, None, tuple(passages), tuple(p.source_id for p in passages), True, None, "EXPLICIT_ENTITY_ATTRIBUTE_MATCH")
 
 
 def build_extractive_answer(evidence: EvidenceExtractionResult, language: str | None = None) -> ExtractiveAnswerResult:

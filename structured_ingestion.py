@@ -1,0 +1,336 @@
+"""Phase-1 structured DOCX extraction and preview (no indexing)."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from hashlib import sha256
+from pathlib import Path
+import re
+from typing import Any, Iterable
+
+from docx import Document
+
+
+@dataclass
+class NormalizedBlock:
+    text: str
+    block_type: str
+    source_file: str
+    location: str
+    section: str | None = None
+    sheet_name: str | None = None
+    table_index: int | None = None
+    row_index: int | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def block_id(self) -> str:
+        """Stable identity independent of ingestion time or insertion order."""
+
+        return sha256(
+            f"{self.source_file}\0{self.location}\0{self.block_type}\0{self.text}".encode("utf-8")
+        ).hexdigest()
+
+    def to_preview(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["block_id"] = self.block_id
+        return payload
+
+
+@dataclass
+class NormalizedChunk:
+    text: str
+    source_file: str
+    location: str
+    block_type: str
+    chunk_ordinal: int
+    source_block_indices: tuple[int, ...]
+    content_sha256: str
+    section: str | None = None
+    table_index: int | None = None
+    row_index: int | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+    def to_preview(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "source_file": self.source_file,
+            "location": self.location,
+            "block_type": self.block_type,
+            "chunk_ordinal": self.chunk_ordinal,
+            "source_block_indices": list(self.source_block_indices),
+            "content_sha256": self.content_sha256,
+            "section": self.section,
+            "table_index": self.table_index,
+            "row_index": self.row_index,
+            "metadata": dict(self.metadata),
+        }
+
+
+_SECRET_FIELD = re.compile(r"(password|passwd|token|api\s*key|secret|private\s*key)", re.I)
+
+
+def _clean(value: str) -> str:
+    return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+
+
+def _safe_value(label: str, value: str) -> str:
+    return "[REDACTED]" if _SECRET_FIELD.search(label) else value
+
+
+def _cell_text(cell: Any) -> str:
+    return _clean(" ".join(p.text for p in cell.paragraphs))
+
+
+def _table_rows(table: Any) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for row in table.rows:
+        values = [_cell_text(cell) for cell in row.cells]
+        rows.append(values)
+    return rows
+
+
+def _key_value_blocks(rows: list[list[str]], source_file: str, location: str, section: str | None, table_index: int) -> list[NormalizedBlock]:
+    blocks: list[NormalizedBlock] = []
+    for row_index, row in enumerate(rows):
+        if len(row) < 2:
+            continue
+        label = row[0]
+        values = [value for value in row[1:] if value]
+        if not label or not values:
+            continue
+        text = f"{label} = {' | '.join(_safe_value(label, value) for value in values)}"
+        blocks.append(NormalizedBlock(
+            text=text, block_type="table_row", source_file=source_file, location=location,
+            section=section, table_index=table_index, row_index=row_index,
+            metadata={"table_shape": "key_value", "normalization_strategy": "key_value"},
+        ))
+    return blocks
+
+
+def _matrix_blocks(rows: list[list[str]], source_file: str, location: str, section: str | None, table_index: int) -> list[NormalizedBlock]:
+    if not rows or len(rows[0]) < 3:
+        return []
+    headers = rows[0]
+    # A matrix has a row-label column and named logical columns.
+    if not headers[0] or sum(bool(value) for value in headers[1:]) < 2:
+        return []
+    records: list[list[str]] = [(["System name = " + header] if headers[0].casefold() == "system name" and header else []) for header in headers[1:]]
+    for row in rows[1:]:
+        label = row[0] if row else ""
+        if not label:
+            continue
+        for index, value in enumerate(row[1:]):
+            if index >= len(records) or not value:
+                continue
+            records[index].append(f"{label} = {_safe_value(label, value)}")
+    blocks: list[NormalizedBlock] = []
+    for column_index, values in enumerate(records):
+        if not values:
+            continue
+        blocks.append(NormalizedBlock(
+            text=" | ".join(values), block_type="table_row", source_file=source_file,
+            location=location, section=section, table_index=table_index,
+            row_index=column_index, metadata={
+                "logical_column_index": column_index,
+                "table_shape": "matrix",
+                "normalization_strategy": "column_records",
+                "column_header": headers[column_index + 1],
+            },
+        ))
+    return blocks
+
+
+def _row_record_blocks(rows: list[list[str]], source_file: str, location: str, section: str | None, table_index: int) -> list[NormalizedBlock]:
+    blocks: list[NormalizedBlock] = []
+    for row_index, row in enumerate(rows[1:] if rows else []):
+        values = [value for value in row if value]
+        if not values:
+            continue
+        blocks.append(NormalizedBlock(
+            text=" | ".join(values), block_type="table_row", source_file=source_file,
+            location=location, section=section, table_index=table_index, row_index=row_index,
+            metadata={"table_shape": "row_records", "normalization_strategy": "row_records"},
+        ))
+    return blocks
+
+
+def _table_blocks(table: Any, source_file: str, section: str | None, table_index: int) -> list[NormalizedBlock]:
+    rows = _table_rows(table)
+    location = f"Table {table_index}"
+    # Wide tables with a named first row are transposed configuration matrices.
+    if rows and len(rows[0]) >= 3 and (
+        rows[0][0].casefold() in {"system name", "system", "destination"}
+        or any((row and row[0].casefold() in {"protocol", "host", "hostname", "username", "password", "filedirectory", "directory"}) for row in rows[1:])
+    ):
+        matrix = _matrix_blocks(rows, source_file, location, section, table_index)
+        if matrix:
+            return matrix
+    if rows and len(rows[0]) >= 3:
+        records = _row_record_blocks(rows, source_file, location, section, table_index)
+        if records:
+            return records
+    key_values = _key_value_blocks(rows, source_file, location, section, table_index)
+    if key_values:
+        return key_values
+    raw = " | ".join(" | ".join(value for value in row if value) for row in rows if any(row))
+    if not raw:
+        return []
+    return [NormalizedBlock(
+        text=raw, block_type="table_row", source_file=source_file, location=location,
+        section=section, table_index=table_index,
+        metadata={"table_shape": "ambiguous", "normalization_strategy": "raw_fallback"},
+    )]
+
+
+def extract_docx_blocks(document: str | Path | bytes, source_file: str | None = None) -> list[NormalizedBlock]:
+    """Extract DOCX paragraphs, headings, and structured tables in document order."""
+
+    if isinstance(document, (str, Path)):
+        path = Path(document)
+        source_file = source_file or path.name
+        doc = Document(str(path))
+    else:
+        from io import BytesIO
+        if not source_file:
+            raise ValueError("source_file is required for byte input")
+        doc = Document(BytesIO(document))
+
+    blocks: list[NormalizedBlock] = []
+    section: str | None = None
+    table_index = 0
+    body = doc.element.body
+    for child in body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            paragraph = next((p for p in doc.paragraphs if p._p is child), None)
+            if paragraph is None or not _clean(paragraph.text):
+                continue
+            style = paragraph.style.name if paragraph.style else ""
+            is_heading = style.lower().startswith("heading")
+            if is_heading:
+                section = _clean(paragraph.text)
+            blocks.append(NormalizedBlock(
+                text=_clean(paragraph.text), block_type="heading" if is_heading else "paragraph",
+                source_file=source_file, location="Corps du document", section=section,
+            ))
+        elif tag == "tbl":
+            table = next((t for t in doc.tables if t._tbl is child), None)
+            if table is not None:
+                blocks.extend(_table_blocks(table, source_file, section, table_index))
+                table_index += 1
+    return blocks
+
+
+def preview_docx(document: str | Path | bytes, source_file: str | None = None) -> list[dict[str, Any]]:
+    """Return JSON-friendly normalized blocks without indexing or persistence."""
+
+    return [block.to_preview() for block in extract_docx_blocks(document, source_file)]
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+
+
+def normalized_blocks_to_chunks(
+    blocks: Iterable[NormalizedBlock], *, max_length: int = 1000, overlap: int = 250
+) -> list[NormalizedChunk]:
+    """Convert normalized blocks into deterministic, structure-aware chunks.
+
+    Structured table records are always emitted as one atomic chunk. Narrative
+    paragraphs are split by sentence and may overlap at chunk boundaries.
+    """
+
+    if max_length <= 0 or overlap < 0:
+        raise ValueError("max_length must be positive and overlap must be non-negative")
+    chunks: list[NormalizedChunk] = []
+
+    def emit(text: str, block: NormalizedBlock, index: int, source_indices: tuple[int, ...], block_type: str | None = None) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        chunks.append(NormalizedChunk(
+            text=clean,
+            source_file=block.source_file,
+            location=block.location,
+            block_type=block_type or block.block_type,
+            chunk_ordinal=index,
+            source_block_indices=source_indices,
+            content_sha256=sha256(clean.encode("utf-8")).hexdigest(),
+            section=block.section,
+            table_index=block.table_index,
+            row_index=block.row_index,
+            metadata=dict(block.metadata),
+        ))
+
+    for block_index, block in enumerate(blocks):
+        if block.block_type == "table_row" or block.metadata.get("normalization_strategy") in {
+            "key_value", "column_records", "row_records", "raw_fallback"
+        }:
+            emit(block.text, block, len(chunks), (block_index,))
+            continue
+        if block.block_type == "heading":
+            emit(block.text, block, len(chunks), (block_index,))
+            continue
+        sentences = _sentences(block.text)
+        if not sentences:
+            continue
+        current = ""
+        for sentence in sentences:
+            if current and len(current) + 1 + len(sentence) > max_length:
+                emit(current, block, len(chunks), (block_index,))
+                tail = current[-overlap:] if overlap else ""
+                current = (tail + " " + sentence).strip() if tail else sentence
+            else:
+                current = f"{current} {sentence}".strip()
+        emit(current, block, len(chunks), (block_index,))
+    return chunks
+
+
+def preview_docx_chunks(document: str | Path | bytes, source_file: str | None = None, *, max_length: int = 1000, overlap: int = 250) -> list[dict[str, Any]]:
+    """Preview normalized DOCX chunks without indexing or persistence."""
+
+    blocks = extract_docx_blocks(document, source_file)
+    return [chunk.to_preview() for chunk in normalized_blocks_to_chunks(blocks, max_length=max_length, overlap=overlap)]
+
+
+def build_structured_docx_index_payload(
+    file_bytes: bytes,
+    source_file: str,
+    *,
+    file_hash: str,
+    geographical_entity: str = "",
+    application: str = "",
+) -> dict[str, list[Any]]:
+    """Prepare a complete structured DOCX index payload without writing it."""
+
+    chunks = preview_docx_chunks(file_bytes, source_file)
+    ids: list[str] = []
+    documents: list[str] = []
+    metadatas: list[dict[str, Any]] = []
+    for chunk in chunks:
+        chunk_id = f"{file_hash}_chunk_{chunk['chunk_ordinal']}"
+        if chunk_id in ids:
+            raise ValueError("duplicate deterministic structured chunk ID")
+        text = chunk["text"]
+        if any(secret in text.casefold() for secret in ("secret-value", "password =")) and "[redacted]" not in text.casefold():
+            raise ValueError("unredacted secret-like value in structured payload")
+        ids.append(chunk_id)
+        documents.append(text)
+        metadata = {
+            "source_file": source_file,
+            "saved_as": source_file,
+            "file_hash": file_hash,
+            "geographical_entity": geographical_entity,
+            "application": application,
+            "block_type": chunk["block_type"],
+            "section": chunk.get("section") or "",
+            "location": chunk["location"],
+            "chunk_ordinal": chunk["chunk_ordinal"],
+            "content_sha256": chunk["content_sha256"],
+        }
+        for key in ("table_index", "row_index"):
+            if chunk.get(key) is not None:
+                metadata[key] = chunk[key]
+        metadatas.append(metadata)
+    return {"ids": ids, "documents": documents, "metadatas": metadatas}

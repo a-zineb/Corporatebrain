@@ -110,6 +110,7 @@ class RAGPipelineContractTests(unittest.TestCase):
                 "select_display_sources",
                 "deduplicate_sources_by_path",
                 "extract_evidence",
+                "extract_evidence_exhaustive_specific",
                 "build_extractive_answer",
             ],
         )

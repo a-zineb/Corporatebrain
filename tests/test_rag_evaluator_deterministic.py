@@ -951,6 +951,40 @@ class DeterministicEvaluatorTests(unittest.TestCase):
         )
         self.assertEqual(cache.status, "EVIDENCE_FOUND")
 
+    def test_filename_metadata_and_generic_output_distribution_are_rejected(self):
+        for query in ("What is the filename pattern?", "Quel est le modèle de nom de fichier ?"):
+            result = self._extract_from_text(query, "Fichier source : CISA_MZ-001-1.1 - OCM Mediation - GGSN.docx")
+            self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE", query)
+        for query in ("Where are output files written?", "Quel est le répertoire de sortie ?"):
+            result = self._extract_from_text(query, "Distribution pushes output files to consumer systems.")
+            self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE", query)
+
+    def test_explicit_filename_patterns_and_paths_are_accepted(self):
+        for text in ("Filename pattern: GGSN_*.dat", "Filename pattern = ^GGSN_[0-9]+\\.csv$", "Prefix + timestamp"):
+            self.assertEqual(self._extract_from_text("What is the filename pattern?", text).status, "EVIDENCE_FOUND")
+        for path in ("Input path: /data/output/ggsn", r"Output path: C:\\folder\\path", r"Output URI: sftp://host/path", r"Share: \\server\share"):
+            self.assertEqual(self._extract_from_text("Where are output files written?", path).status, "EVIDENCE_FOUND")
+
+    def test_structured_attribute_selection_prefers_explicit_fields(self):
+        cases = (
+            ("Who wrote the P2P specification?", "Spécification Fonctionnelle – P2P", "Écrit par : = Omar EL HIMASS"),
+            ("What value enables duplicate detection?", "Purge des archives = Journalière", "La vérification des doublons PARAM_CHECK_DUP_BATCH est configurée sur la valeur Y"),
+            ("How are duplicate files detected?", "Duplicate overview", "CRC / PARAM_CHECK_DUP_BATCH mechanism"),
+            ("What is the archive purge frequency?", "La durée est de 30 jours.", "Purge des archives = Journalière"),
+            ("What is the BI output directory?", "Directory = /home/input", "System name = BI | FileDirectory = /data/input/mz/p2p/"),
+        )
+        for query, generic, explicit in cases:
+            sources = (
+                rag_pipeline.PromptSource(1, "p2p.docx", "Table", generic, "p2p.docx", False, {"block_type": "paragraph"}),
+                rag_pipeline.PromptSource(2, "p2p.docx", "Table", explicit, "p2p.docx", False, {"block_type": "table_row"}),
+            )
+            result = rag_pipeline.extract_evidence(rag_pipeline.PipelineTrace(
+                query=query, rewritten_query=query,
+                prompt=rag_pipeline.PromptResult("p", sources, ""),
+            ))
+            self.assertEqual(result.status, "EVIDENCE_FOUND", query)
+            self.assertIn(explicit.split(" = ")[-1].split(" |")[0], result.passages[0].text, query)
+
     def test_same_section_adjacent_entity_allows_attribute_passage(self):
         result = self._extract_from_text(
             "What is the maximum SIMBOX cache age?",

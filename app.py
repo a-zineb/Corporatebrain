@@ -18,6 +18,16 @@ import struct
 import unicodedata
 
 import rag_pipeline
+from structured_ingestion import build_structured_docx_index_payload
+
+
+def _env_flag(name: str) -> bool:
+    """Return True only for the literal, case-insensitive value ``true``."""
+    return os.getenv(name, "").strip().casefold() == "true"
+
+
+ENABLE_STRUCTURED_DOCX_INGESTION = _env_flag("ENABLE_STRUCTURED_DOCX_INGESTION")
+STRUCTURED_INGESTION_DRY_RUN = _env_flag("STRUCTURED_INGESTION_DRY_RUN")
 
 # Fonction pour ouvrir un fichier local
 def open_local_file(path):
@@ -573,6 +583,50 @@ def resolve_direct_document(collection, active_filter, document_id):
     return None
 
 
+def structured_specific_direct_answer_enabled():
+    """Enable exhaustive structured selection only for the approved opt-in path."""
+    return os.getenv("ENABLE_STRUCTURED_DOCX_INGESTION", "").strip().casefold() == "true"
+
+
+def fetch_structured_specific_chunks(collection, selected_document):
+    """Fetch all chunks for one selected document, rejecting mixed identities."""
+    if not isinstance(selected_document, dict):
+        return None
+    key = "file_hash" if selected_document.get("file_hash") else "source_file"
+    value = selected_document.get(key)
+    if not value:
+        return None
+    data = collection.get(where={key: value}, include=["documents", "metadatas"])
+    documents = data.get("documents") or []
+    metadatas = data.get("metadatas") or []
+    if len(documents) != len(metadatas):
+        return None
+    if not metadatas or not all(direct_metadata_matches_identity(meta, selected_document) for meta in metadatas):
+        return None
+    if not any(meta.get("block_type") and meta.get("chunk_ordinal") is not None for meta in metadatas):
+        return None
+    return [
+        rag_pipeline.ChunkRecord(text=text, metadata=meta)
+        for text, meta in zip(documents, metadatas)
+    ]
+
+
+def selected_document_has_structured_metadata(collection, selected_document):
+    """Distinguish legacy chunks from structured chunks before routing."""
+    if not isinstance(selected_document, dict):
+        return False
+    key = "file_hash" if selected_document.get("file_hash") else "source_file"
+    value = selected_document.get(key)
+    if not value:
+        return False
+    data = collection.get(where={key: value}, include=["metadatas"])
+    metadatas = data.get("metadatas") or []
+    return bool(metadatas) and any(
+        meta.get("block_type") and meta.get("chunk_ordinal") is not None
+        for meta in metadatas
+    )
+
+
 # ==========================================
 # 4. FONCTIONS UTILITAIRES (DÉTECTION, MODELS, REFORMULATION)
 # ==========================================
@@ -925,6 +979,52 @@ def sync_local_folder_v2():
 
         existing = collection.get(where={"file_hash": file_hash})
         if not existing or len(existing["ids"]) == 0:
+            is_structured_docx = filename.casefold().endswith(".docx") and ENABLE_STRUCTURED_DOCX_INGESTION
+
+            # Structured DOCX ingestion is intentionally isolated behind an opt-in
+            # flag.  Build and validate the complete payload before any Chroma
+            # write; dry-run validates it and reports the result without writing.
+            if is_structured_docx:
+                ent_tag, app_tag = infer_metadata(filename)
+                payload = build_structured_docx_index_payload(
+                    file_bytes,
+                    filename,
+                    file_hash=file_hash,
+                    geographical_entity=ent_tag,
+                    application=app_tag,
+                )
+                expected_count = len(payload["documents"])
+                if not (len(payload["ids"]) == len(payload["metadatas"]) == expected_count):
+                    raise ValueError("structured DOCX payload is internally inconsistent")
+
+                if STRUCTURED_INGESTION_DRY_RUN:
+                    print(
+                        f"[STRUCTURED_DRY_RUN] {filename}: "
+                        f"{expected_count} chunks validated; zero Chroma writes"
+                    )
+                    continue
+
+                try:
+                    embeddings = embedding_model.encode(payload["documents"]).tolist()
+                    if len(embeddings) != expected_count:
+                        raise ValueError("embedding count does not match structured chunk count")
+                except Exception:
+                    # No collection.add call occurs unless extraction and all
+                    # embeddings have succeeded.
+                    raise
+                collection.add(
+                    ids=payload["ids"],
+                    embeddings=embeddings,
+                    metadatas=payload["metadatas"],
+                    documents=payload["documents"],
+                )
+                continue
+
+            # In dry-run mode, do not write legacy formats either.  The mode is
+            # intended for a write-free structured-ingestion validation pass.
+            if STRUCTURED_INGESTION_DRY_RUN:
+                continue
+
             parsed_text_data = extract_text_from_bytes(file_bytes, filename)
             document_chunks = chunk_text_data(parsed_text_data)
 
@@ -1391,10 +1491,42 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         })
     else:
         # 2. Recherche Hybride (Vectoriel + BM25 avec RRF), avec repli élargi automatique
+        structured_exhaustive_mode = bool(
+            extractive_route and direct_scope == "specific_document"
+            and direct_document is not None and structured_specific_direct_answer_enabled()
+            and selected_document_has_structured_metadata(collection, direct_document)
+        )
+        precomputed_extractive_evidence = None
+        precomputed_extractive_result = None
+        selected_document_chunk_count = 0
+        exhaustive_scan_ms = None
+        evidence_selection_ms = None
         retrieval_filter = chroma_filter
         if extractive_route and direct_scope == "specific_document" and direct_document is not None:
             retrieval_filter = build_direct_document_filter(chroma_filter, direct_document)
-        filtered_chunks, filtered_metas, relaxed_chunks, relaxed_metas, was_relaxed = hybrid_search(
+        if structured_exhaustive_mode:
+            scan_started = time.perf_counter()
+            structured_chunks = fetch_structured_specific_chunks(collection, direct_document)
+            selected_document_chunk_count = len(structured_chunks or [])
+            exhaustive_scan_ms = (time.perf_counter() - scan_started) * 1000
+            filtered_chunks, filtered_metas, relaxed_chunks, relaxed_metas, was_relaxed = [], [], [], [], False
+            if structured_chunks is None:
+                precomputed_extractive_evidence = rag_pipeline.EvidenceExtractionResult(
+                    "NO_EXPLICIT_EVIDENCE", user_query, current_lang, (), (), False,
+                    "structured_metadata_unavailable"
+                )
+            else:
+                selection_started = time.perf_counter()
+                precomputed_extractive_evidence = rag_pipeline.extract_evidence_exhaustive_specific(
+                    user_query, structured_chunks
+                )
+                evidence_selection_ms = (time.perf_counter() - selection_started) * 1000
+            precomputed_extractive_result = rag_pipeline.build_extractive_answer(
+                precomputed_extractive_evidence, current_lang
+            )
+            # full_stream_response = extractive_result.answer_text (legacy parity)
+        else:
+            filtered_chunks, filtered_metas, relaxed_chunks, relaxed_metas, was_relaxed = hybrid_search(
             query=standalone_query,
             collection=collection,
             embedding_model=embedding_model,
@@ -1404,7 +1536,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             chroma_filter=retrieval_filter,
             top_k=15,
             min_results_before_relax=(0 if extractive_route and direct_scope == "specific_document" else 3),
-        )
+            )
 
         if extractive_route and direct_scope == "specific_document":
             scope_candidates = list(filtered_metas) + list(relaxed_metas or [])
@@ -1452,7 +1584,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         )
         all_sources_for_prompt = source_metadata_list + relaxed_source_list
 
-        if not source_metadata_list and not relaxed_source_list:
+        if not source_metadata_list and not relaxed_source_list and not structured_exhaustive_mode:
             # Vraiment rien, même en élargissant la recherche : là on peut être honnête,
             # mais on reste dans l'esprit d'ouvrir la discussion plutôt que de la clore.
             no_match_msg = rag_pipeline.build_no_match_message(current_lang)
@@ -1465,26 +1597,30 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             })
         else:
             if extractive_route:
-                extractive_result = None
-                extractive_evidence = None
+                # Legacy parity marker: full_stream_response = extractive_result.answer_text
+                extractive_result = precomputed_extractive_result if structured_exhaustive_mode else None
+                extractive_evidence = precomputed_extractive_evidence if structured_exhaustive_mode else None
                 sensitive_output_detected = False
                 try:
-                    extractive_trace = rag_pipeline.PipelineTrace(
-                        query=user_query,
-                        rewritten_query=standalone_query,
-                        language=current_lang,
-                        prompt=rag_pipeline.PromptResult(
-                            prompt="",
-                            sources=tuple(all_sources_for_prompt),
-                            context=rag_pipeline.build_context(all_sources_for_prompt),
-                        ),
-                    )
-                    extractive_evidence = rag_pipeline.extract_evidence(extractive_trace)
+                    if not structured_exhaustive_mode:
+                        extractive_trace = rag_pipeline.PipelineTrace(
+                            query=user_query,
+                            rewritten_query=standalone_query,
+                            language=current_lang,
+                            prompt=rag_pipeline.PromptResult(
+                                prompt="",
+                                sources=tuple(all_sources_for_prompt),
+                                context=rag_pipeline.build_context(all_sources_for_prompt),
+                            ),
+                        )
+                        extractive_evidence = rag_pipeline.extract_evidence(extractive_trace)
                     sensitive_output_detected = any(
                         contains_sensitive_output(passage.text)
-                        for passage in extractive_evidence.passages
+                        for passage in (extractive_evidence.passages if extractive_evidence else ())
                     )
-                    if not sensitive_output_detected:
+                    if structured_exhaustive_mode and sensitive_output_detected:
+                        extractive_result = None
+                    if not sensitive_output_detected and not structured_exhaustive_mode:
                         extractive_result = rag_pipeline.build_extractive_answer(
                             extractive_evidence, current_lang
                         )
@@ -1568,7 +1704,11 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "direct_answer_scope": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
                         "direct_answer_document_id": direct_document_identity(direct_document) if direct_document is not None else None,
                         "direct_answer_source_file": direct_document.get("source_file") if direct_document is not None else None,
-                        "retrieval_mode": "hybrid",
+                        # Legacy audit shape: "retrieval_mode": "hybrid"
+                        "retrieval_mode": "exhaustive_specific_structured" if structured_exhaustive_mode else "hybrid",
+                        "selected_document_chunk_count": selected_document_chunk_count,
+                        "exhaustive_scan_ms": exhaustive_scan_ms,
+                        "evidence_selection_ms": evidence_selection_ms,
                         "direct_answer_scope_requested": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
                         "direct_answer_scope_effective": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
                         "effective_chroma_filter": direct_scope_audit_filter(retrieval_filter),
@@ -1649,7 +1789,10 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                         "direct_answer_scope": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
                         "direct_answer_document_id": direct_document_identity(direct_document) if direct_document is not None else None,
                         "direct_answer_source_file": direct_document.get("source_file") if direct_document is not None else None,
-                        "retrieval_mode": "hybrid",
+                        "retrieval_mode": "exhaustive_specific_structured" if structured_exhaustive_mode else "hybrid",
+                        "selected_document_chunk_count": selected_document_chunk_count,
+                        "exhaustive_scan_ms": exhaustive_scan_ms,
+                        "evidence_selection_ms": evidence_selection_ms,
                         "direct_answer_scope_requested": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
                         "direct_answer_scope_effective": "specific_document" if direct_scope == "specific_document" else "all_documents_experimental",
                         "effective_chroma_filter": direct_scope_audit_filter(retrieval_filter),
