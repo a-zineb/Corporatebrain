@@ -250,9 +250,14 @@ def is_direct_sensitive_request(query):
 def contains_sensitive_output(text):
     """Detect secret-like values without returning or logging the value."""
     value = str(text or "")
+    password_pattern = re.compile(
+        r"(?i)\b(?:password|passwd|mot de passe)\s*[:=]\s*(?P<secret>\S+)"
+    )
+    for match in password_pattern.finditer(value):
+        if match.group("secret").casefold() not in {"[redacted]", "***", "******"}:
+            return True
     patterns = (
-        r"(?i)\b(?:password|passwd|mot de passe)\s*[:=]\s*\S+",
-        r"(?i)\b(?:api[_ -]?key|access[_ -]?token|bearer|jwt|secret)\s*[:=]\s*\S+",
+        r"(?i)\b(?:api[_ -]?key|access[_ -]?token|token|bearer|jwt|secret)\s*[:=]\s*\S+",
         r"(?i)\b(?:username|user)\s*[:=]\s*\S+\s+(?:password|passwd)\s*[:=]\s*\S+",
         r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
     )

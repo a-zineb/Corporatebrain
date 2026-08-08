@@ -133,6 +133,29 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         self.assertTrue(helpers["contains_sensitive_output"]("-----BEGIN PRIVATE KEY-----"))
         self.assertFalse(helpers["contains_sensitive_output"]("Password policy requires rotation."))
 
+    def test_sensitive_output_allows_approved_redaction_placeholders(self):
+        scan = _load_helpers()["contains_sensitive_output"]
+        for text in (
+            "Password = [REDACTED]",
+            "Password: [REDACTED]",
+            "passwd = [REDACTED]",
+            "mot de passe = [REDACTED]",
+            "Password = ***",
+            "Password = ******",
+        ):
+            self.assertFalse(scan(text), text)
+
+    def test_sensitive_output_still_blocks_real_values(self):
+        scan = _load_helpers()["contains_sensitive_output"]
+        for text in (
+            "Password = ActualSecret123",
+            "passwd: qwerty123",
+            "mot de passe = secret-value",
+            "token = abc123",
+            "api_key = sk-test",
+        ):
+            self.assertTrue(scan(text), text)
+
     def test_direct_failure_reason_is_persisted_and_has_no_downstream_generation(self):
         self.assertIn('"direct_failure_reason": direct_reason', APP_SOURCE)
         start = APP_SOURCE.index("if extractive_route and answer_mode == \"Direct answer\":")
