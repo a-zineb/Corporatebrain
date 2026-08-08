@@ -1384,6 +1384,8 @@ def _strict_exhaustive_attribute(query: str) -> str | None:
         return "collection_frequency"
     if "distribution frequency" in nq or "frequence de distribution" in nq:
         return "distribution_frequency"
+    if "what does" in nq and "mean" in nq and "sftp" in nq:
+        return "protocol_definition"
     if "protocol" in nq:
         return "protocol"
     if "port" in nq:
@@ -1450,7 +1452,7 @@ def _strict_value_state(attribute: str, text: str) -> str:
         ok = bool(re.search(r"[*?]|\^?[A-Za-z0-9_]+\[.*?\]|prefix\s*\+\s*timestamp|[A-Za-z]+(?:[-_]\w+){2,}", text, re.I))
     elif attribute in {"collection_frequency", "distribution_frequency", "archive_purge_frequency"}:
         ok = bool(re.search(r"daily|every|jours?|quotidien|journaliere|journalière|une fois par jour|\d{1,2}:\d{2}", normalized, re.I))
-    elif attribute == "protocol":
+    elif attribute in {"protocol", "protocol_definition"}:
         ok = bool(re.search(r"\b(?:sftp|ftp|http|https|tcp|udp|nfs)\b", normalized, re.I))
     elif attribute == "port":
         ok = bool(re.search(r"\bport\s*[:=]?\s*\d{1,5}\b", text, re.I))
@@ -1566,6 +1568,10 @@ def extract_evidence_exhaustive_specific(
             score += 10.0
         if attribute == "duplicate_mechanism" and re.search(r"crc|cyclic redundancy check|redondance cyclique", text, re.I):
             score += 5.0
+        if attribute == "protocol" and re.search(r"\b(?:connection\s+protocol|protocol)\s*=", text, re.I):
+            score += 8.0
+        if attribute == "protocol_definition" and re.search(r"\bsftp\s*=", text, re.I):
+            score += 8.0
         source = PromptSource(index + 1, str(metadata.get("source_file", "")), str(metadata.get("location", "")), text, str(metadata.get("source_file", "")), False, dict(metadata))
         matched = (attribute,) + tuple(sorted(entities))
         admitted.append((index, score, chunk, text, matched))
