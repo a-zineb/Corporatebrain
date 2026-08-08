@@ -1114,8 +1114,10 @@ def _technical_attribute_value_status(query: str, passage: str) -> str | None:
         if re.search(r"\bport\s*[:=]?\s*[1-9]\d{1,4}\b|\b(?:sftp|ftp|http|https)\s*[:=]\s*[1-9]\d{1,4}\b", passage, flags=re.IGNORECASE):
             return None
         return "ATTRIBUTE_PRESENT_VALUE_MISSING"
-    if any(term in nq for term in ("how often", "frequency", "schedule", "frequence", "fréquence")):
-        if re.search(r"\b(?:every|daily|weekly|monthly|minutes?|hours?|jours?|quotidien|cron)\b|\b\d{1,2}:\d{2}\b", np, flags=re.IGNORECASE):
+    if any(term in nq for term in ("how often", "frequency", "schedule", "frequence", "fréquence", "a quelle frequence", "tous les combien")):
+        frequency_value = re.search(r"\b(?:every|daily|weekly|monthly|minutes?|hours?|quotidien|journaliere|journalière|une fois par jour|tous les jours|cron)\b|\b\d{1,2}:\d{2}\b", np, flags=re.IGNORECASE)
+        duration_only = bool(re.search(r"\b\d+\s*(?:jours?|days?|months?|mois)\b", np, flags=re.IGNORECASE)) and not frequency_value
+        if frequency_value and not duration_only:
             return None
         return "ATTRIBUTE_PRESENT_VALUE_MISSING"
     return None
@@ -1378,7 +1380,7 @@ def _strict_exhaustive_attribute(query: str) -> str | None:
         return "version"
     if "filename pattern" in nq or "modele de nom" in nq or "pattern de fichier" in nq:
         return "filename_pattern"
-    if "collection frequency" in nq or "frequence de collecte" in nq:
+    if ("collection frequency" in nq or "frequence de collecte" in nq or "how often" in nq or "a quelle frequence" in nq or "tous les combien" in nq) and "purge" not in nq and "archive" not in nq:
         return "collection_frequency"
     if "distribution frequency" in nq or "frequence de distribution" in nq:
         return "distribution_frequency"
@@ -1402,7 +1404,7 @@ def _strict_exhaustive_attribute(query: str) -> str | None:
         return "retention_period"
     if "suffix" in nq or "archived filename" in nq:
         return "archive_suffix"
-    if "purge" in nq:
+    if "purge" in nq or ("how often" in nq and "archive" in nq):
         return "archive_purge_frequency"
     if "username" in nq or "user name" in nq:
         return "username"
@@ -1494,6 +1496,7 @@ def extract_evidence_exhaustive_specific(
     attribute = _strict_exhaustive_attribute(query)
     if attribute is None:
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
+    nq = _normalize_evidence_text(query)
     entities = _strict_exhaustive_entities(query)
     admitted: list[tuple[int, float, ChunkRecord, str, tuple[str, ...]]] = []
     for index, chunk in enumerate(chunks):
@@ -1538,7 +1541,13 @@ def extract_evidence_exhaustive_specific(
             )
             if not entity_hit and metadata.get("block_type") in {"table_row", "row_record", "column_record"}:
                 continue
-        if attribute == "port" and entities and not any(entity in normalized for entity in entities):
+        collection_port_context = (
+            attribute == "port"
+            and "p2p" in nq
+            and "collection" in nq
+            and ("connection protocol" in normalized or "sftp" in normalized)
+        )
+        if attribute == "port" and entities and not any(entity in normalized for entity in entities) and not collection_port_context:
             continue
         if attribute == "username" and entities and not any(entity in normalized for entity in entities):
             continue

@@ -247,6 +247,11 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         ):
             self.assertTrue(suitable(query), query)
 
+    def test_frequency_queries_are_suitable_for_direct_answer(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        for query in ("How often are files collected?", "How often are archives purged?", "A quelle frequence les fichiers sont-ils collectes ?"):
+            self.assertTrue(suitable(query), query)
+
     def test_explanatory_and_comparative_variants_remain_unsuitable(self):
         suitable = _load_helpers()["is_direct_answer_suitable"]
         for query in (

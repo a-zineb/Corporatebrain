@@ -56,5 +56,31 @@ class ExhaustiveSpecificEvidenceTests(unittest.TestCase):
         self.assertEqual(first.to_json(), second.to_json())
 
 
+    def test_frequency_values_are_distinguished_from_duration(self):
+        chunks = [
+            chunk("Collection Frequency = Tous les jours à 7h"),
+            chunk("Purge des archives = Journalière"),
+            chunk("L'âge maximal du cache sera défini sur 30 jours."),
+        ]
+        collected = rag_pipeline.extract_evidence_exhaustive_specific("How often are files collected?", chunks)
+        purged = rag_pipeline.extract_evidence_exhaustive_specific("How often are archives purged?", chunks)
+        self.assertIn("Tous les jours", collected.passages[0].text)
+        self.assertIn("Journali", purged.passages[0].text)
+        self.assertNotIn("30 jours", purged.passages[0].text)
+
+    def test_p2p_collection_port_accepts_connection_protocol_record(self):
+        result = rag_pipeline.extract_evidence_exhaustive_specific(
+            "What port is used for P2P collection?", [chunk("Connection Protocol = SFTP (port : 22)")]
+        )
+        self.assertEqual(result.status, "EVIDENCE_FOUND")
+        self.assertIn("22", result.passages[0].text)
+
+    def test_generic_dwh_port_remains_unsupported(self):
+        result = rag_pipeline.extract_evidence_exhaustive_specific(
+            "What is the DWH port?", [chunk("Connection Protocol = SFTP (port : 22)")]
+        )
+        self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
+
+
 if __name__ == "__main__":
     unittest.main()
