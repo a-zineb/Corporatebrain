@@ -100,6 +100,88 @@ class GenericStructuredDirectTests(unittest.TestCase):
         self.assertEqual(reviewer.status, "EVIDENCE_FOUND")
         self.assertIn("Bob Smith", reviewer.passages[0].text)
 
+    def test_section_qualified_repeated_fields(self):
+        chunks = [
+            ChunkRecord("Collection Frequency = 5 minutes", {"source_file": "x.docx", "section": "Primary Feed", "block_type": "key_value"}),
+            ChunkRecord("Collection Frequency = 15 minutes", {"source_file": "x.docx", "section": "Validation Feed", "block_type": "key_value"}),
+        ]
+        primary = extract_evidence_generic_structured("How often are Primary Feed files collected?", chunks)
+        validation = extract_evidence_generic_structured("How often are Validation Feed files collected?", chunks)
+        self.assertIn("5 minutes", primary.passages[0].text)
+        self.assertIn("15 minutes", validation.passages[0].text)
+
+    def test_matrix_entity_collisions_are_hard_filtered(self):
+        chunks = [
+            ChunkRecord("System name = DATAHUB | Protocol = SFTP | FileDirectory = /datahub/input", {"source_file": "x.docx", "block_type": "column_record"}),
+            ChunkRecord("System name = WAREHOUSE | Protocol = SFTP | FileDirectory = /warehouse/input", {"source_file": "x.docx", "block_type": "column_record"}),
+            ChunkRecord("System name = REPORTING | Protocol = FTP | FileDirectory = /reporting/input", {"source_file": "x.docx", "block_type": "column_record"}),
+        ]
+        self.assertIn("/datahub/input", extract_evidence_generic_structured("What is the DATAHUB output directory?", chunks).passages[0].text)
+        self.assertIn("/warehouse/input", extract_evidence_generic_structured("What is the WAREHOUSE output directory?", chunks).passages[0].text)
+        self.assertIn("FTP", extract_evidence_generic_structured("What protocol is used for REPORTING?", chunks).passages[0].text)
+
+    def test_explicit_factual_prose_is_supported(self):
+        chunks = [
+            ChunkRecord("Duplicate files are detected using CRC over the complete file.", {"source_file": "x.docx", "block_type": "paragraph"}),
+            ChunkRecord("The maximum cache age is 30 days.", {"source_file": "x.docx", "block_type": "paragraph"}),
+            ChunkRecord("Archived files are compressed using GZIP.", {"source_file": "x.docx", "block_type": "paragraph"}),
+            ChunkRecord("BI has priority over DWH.", {"source_file": "x.docx", "block_type": "paragraph"}),
+        ]
+        self.assertEqual(extract_evidence_generic_structured("How are duplicate files detected?", chunks).status, "EVIDENCE_FOUND")
+        self.assertIn("30 days", extract_evidence_generic_structured("What is the maximum cache age?", chunks).passages[0].text)
+        self.assertIn("GZIP", extract_evidence_generic_structured("What compression format is used?", chunks).passages[0].text)
+        self.assertIn("BI has priority", extract_evidence_generic_structured("Which system has priority?", chunks).passages[0].text)
+
+    def test_ambiguous_repeated_field_fails_closed(self):
+        chunks = [
+            ChunkRecord("Collection Frequency = 5 minutes", {"source_file": "x.docx", "block_type": "key_value"}),
+            ChunkRecord("Collection Frequency = 15 minutes", {"source_file": "x.docx", "block_type": "key_value"}),
+        ]
+        self.assertEqual(extract_evidence_generic_structured("How often are files collected?", chunks).status, "NO_EXPLICIT_EVIDENCE")
+
+    def test_redacted_password_does_not_block_allowed_host(self):
+        chunks = [ChunkRecord("System name = BI | Host = 10.0.0.1 | Password = [REDACTED]", {"source_file": "x.docx", "block_type": "column_record"})]
+        result = extract_evidence_generic_structured("What is the BI host?", chunks)
+        self.assertEqual(result.status, "EVIDENCE_FOUND")
+        self.assertIn("10.0.0.1", result.passages[0].text)
+
+    def test_row_qualified_relations_beat_global_fields(self):
+        chunks = [
+            ChunkRecord("Document Author = Alice Global", {"source_file": "x.docx", "block_type": "key_value"}),
+            ChunkRecord("Version = V1.0 | Author = Bob One", {"source_file": "x.docx", "block_type": "table_row"}),
+            ChunkRecord("Version = V2.0 | Author = Carol Two", {"source_file": "x.docx", "block_type": "table_row"}),
+            ChunkRecord("Version = V3.0 | Author = David Three", {"source_file": "x.docx", "block_type": "table_row"}),
+            ChunkRecord("Environment = Test | Endpoint = /test/api", {"source_file": "x.docx", "block_type": "table_row"}),
+            ChunkRecord("Environment = Production | Endpoint = /prod/api", {"source_file": "x.docx", "block_type": "table_row"}),
+        ]
+        v2 = extract_evidence_generic_structured("Who authored version V2.0?", chunks)
+        v3 = extract_evidence_generic_structured("Who authored version V3.0?", chunks)
+        global_author = extract_evidence_generic_structured("Who wrote the document?", chunks)
+        production = extract_evidence_generic_structured("What is the Production endpoint?", chunks)
+        self.assertIn("Carol Two", v2.passages[0].text)
+        self.assertIn("David Three", v3.passages[0].text)
+        self.assertIn("Alice Global", global_author.passages[0].text)
+        self.assertIn("/prod/api", production.passages[0].text)
+
+    def test_qualifier_without_same_record_field_fails_closed(self):
+        chunks = [
+            ChunkRecord("Document Author = Alice Global", {"source_file": "x.docx", "block_type": "key_value"}),
+            ChunkRecord("Version = V2.0 | Description = Changed", {"source_file": "x.docx", "block_type": "table_row"}),
+        ]
+        result = extract_evidence_generic_structured("Who authored version V2.0?", chunks)
+        self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
+
+    def test_entity_qualified_directory_rejects_global_and_other_entities(self):
+        chunks = [
+            ChunkRecord("Directory = /collector/input", {"source_file": "x.docx", "block_type": "key_value"}),
+            ChunkRecord("System name = WAREHOUSE | FileDirectory = TO BE DEFINED", {"source_file": "x.docx", "block_type": "column_record"}),
+            ChunkRecord("System name = ANALYTICS | FileDirectory = /analytics/output", {"source_file": "x.docx", "block_type": "column_record"}),
+        ]
+        analytics = extract_evidence_generic_structured("What is the ANALYTICS output directory?", chunks)
+        warehouse = extract_evidence_generic_structured("What is the WAREHOUSE output directory?", chunks)
+        self.assertIn("/analytics/output", analytics.passages[0].text)
+        self.assertIn("TO BE DEFINED", warehouse.passages[0].text)
+
 
 if __name__ == "__main__":
     unittest.main()

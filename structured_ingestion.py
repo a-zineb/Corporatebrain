@@ -164,15 +164,31 @@ def _matrix_blocks(rows: list[list[str]], source_file: str, location: str, secti
 
 
 def _row_record_blocks(rows: list[list[str]], source_file: str, location: str, section: str | None, table_index: int) -> list[NormalizedBlock]:
+    """Normalize ordinary rectangular tables with stable header/value pairs."""
     blocks: list[NormalizedBlock] = []
-    for row_index, row in enumerate(rows[1:] if rows else []):
-        values = [value for value in row if value]
-        if not values:
+    if not rows:
+        return blocks
+    headers = list(rows[0])
+    normalized_headers = [_clean(value).casefold() for value in headers]
+    for row_index, row in enumerate(rows[1:], start=1):
+        normalized_row = [_clean(value).casefold() for value in row]
+        # Repeated header rows are ignored conservatively only when the
+        # populated cells match the original header sequence.
+        if normalized_row[:len(normalized_headers)] == normalized_headers and any(normalized_headers):
+            continue
+        pairs: list[str] = []
+        for column_index, value in enumerate(row):
+            value = _clean(value)
+            if not value:
+                continue
+            label = headers[column_index] if column_index < len(headers) and headers[column_index] else f"Column {column_index + 1}"
+            pairs.append(f"{label} = {_safe_value(label, value)}")
+        if not pairs:
             continue
         blocks.append(NormalizedBlock(
-            text=" | ".join(values), block_type="table_row", source_file=source_file,
+            text=" | ".join(pairs), block_type="table_row", source_file=source_file,
             location=location, section=section, table_index=table_index, row_index=row_index,
-            metadata={"table_shape": "row_records", "normalization_strategy": "row_records"},
+            metadata={"table_shape": "row_records", "normalization_strategy": "row_records", "column_headers": headers},
         ))
     return blocks
 

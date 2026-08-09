@@ -1594,7 +1594,7 @@ _GENERIC_STOPWORDS = {
     "un", "une", "et", "sur", "dans", "pour", "comment", "qui", "que", "se", "trouve",
 }
 _GENERIC_SYNONYM_GROUPS = (
-    {"wrote", "write", "written", "author", "auteur", "ecrit", "redige"},
+    {"wrote", "write", "written", "authored", "author", "auteur", "ecrit", "redige"},
     {"reviewer", "reviewed", "revue", "review"},
     {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint"},
     {"frequency", "often", "interval", "polling", "frequence", "fréquence", "schedule"},
@@ -1604,7 +1604,22 @@ _GENERIC_ATTRIBUTE_HINTS = {
     "author", "reviewer", "wrote", "version", "directory", "folder", "path", "endpoint",
     "frequency", "interval", "count", "duration", "age", "owner", "protocol", "mode",
     "host", "hostname", "server", "port", "parameter", "table", "schedule", "region",
+    "duplicate", "mechanism", "compression", "priority",
 }
+_GENERIC_RELATIONS = {
+    "author": {"wrote", "write", "written", "authored", "author", "auteur", "ecrit", "redige"},
+    "reviewer": {"reviewer", "reviewed", "review", "revue"},
+    "directory": {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint"},
+    "frequency": {"frequency", "often", "interval", "polling", "frequence", "schedule", "how"},
+    "count": {"count", "number", "nombre", "instances", "retry"},
+    "version": {"version", "revision", "release"},
+    "protocol": {"protocol", "mode", "transfer"},
+    "duplicate": {"duplicate", "duplicates", "doublon", "dupliqu", "mechanism", "detection"},
+    "duration": {"duration", "age", "cache", "maximum"},
+    "compression": {"compression", "compressed", "gzip", "zip"},
+    "priority": {"priority", "priorite"},
+}
+_GENERIC_QUALIFIER_LABELS = {"version", "release", "environment", "system", "system name", "workflow", "destination", "application", "region", "phase", "build"}
 
 
 def _generic_norm(value: str) -> str:
@@ -1649,6 +1664,38 @@ def _generic_value_is_safe(label: str, value: str) -> bool:
     return True
 
 
+def _generic_prose_fields(query_norm: str, text: str) -> list[tuple[str, str]]:
+    """Extract a small, explicit set of safe factual prose relations."""
+    fields: list[tuple[str, str]] = []
+    if "duplicate" in query_norm or "doublon" in query_norm or "dupliqu" in query_norm:
+        match = re.search(r"(?:detected|detecte|vérification|verification|using|controle|contrôle).*?\b(CRC|cyclic redundancy check|contrôle de redondance cyclique|controle de redondance cyclique)\b", text, re.I)
+        if match:
+            fields.append(("duplicate mechanism", match.group(1)))
+    if "cache age" in query_norm or "maximum cache" in query_norm or "duree maximale" in query_norm:
+        match = re.search(r"(?:cache age|âge maximal|age maximal).*?\b(\d+\s*(?:days?|jours?|months?|mois))\b", text, re.I)
+        if match:
+            fields.append(("cache age", match.group(1)))
+    if "compress" in query_norm or "compression" in query_norm:
+        match = re.search(r"(?:compressed|compression|compressé|compresse).*?\b(GZIP|ZIP|\.gz)\b", text, re.I)
+        if match:
+            fields.append(("compression", match.group(1)))
+    if "priority" in query_norm or "priorite" in query_norm:
+        match = re.search(r"\b([A-Za-z][\w-]*)\s+(?:has|a)\s+priority\s+(?:over|sur)\s+([A-Za-z][\w-]*)\b", text, re.I)
+        if match:
+            fields.append(("priority", f"{match.group(1)} > {match.group(2)}"))
+    return fields
+
+
+def _generic_requested_relation(query_tokens: set[str]) -> set[str] | None:
+    matches = [terms for terms in _GENERIC_RELATIONS.values() if query_tokens & terms]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        # Prefer the most specific relation when several generic words occur.
+        return max(matches, key=lambda terms: len(query_tokens & terms))
+    return None
+
+
 def extract_evidence_generic_structured(
     query: str,
     chunks: Sequence[ChunkRecord],
@@ -1663,26 +1710,73 @@ def extract_evidence_generic_structured(
     """
     query_norm = _generic_norm(query)
     query_tokens = _generic_tokens(query)
+    requested_relation = _generic_requested_relation(query_tokens)
     definition_query = bool(
         re.search(r"\b(?:what is|what does|define|meaning of|que signifie|que veut dire)\b", query_norm)
     ) and not (query_tokens & _GENERIC_ATTRIBUTE_HINTS)
     if not query_tokens:
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
     candidates: list[tuple[float, int, ChunkRecord, str, str]] = []
+    # Discover entity and section vocabulary from the selected document.
+    discovered_entities: set[str] = set()
+    discovered_sections: set[str] = set()
+    for chunk in chunks:
+        fields = _generic_structured_fields(chunk.text)
+        for label, value in fields:
+            if _generic_norm(label) in {"system name", "system", "destination", "workflow", "application", "server"}:
+                discovered_entities.add(_generic_norm(value))
+        section = _generic_norm(str((chunk.metadata or {}).get("section", "")))
+        if section:
+            discovered_sections.add(section)
+    explicit_entities = {entity for entity in discovered_entities if entity and entity in query_norm}
+    explicit_sections = {section for section in discovered_sections if section and section in query_norm}
+    qualifier_values: set[str] = set()
+    for chunk in chunks:
+        for label, value in _generic_structured_fields(chunk.text):
+            label_tokens = _generic_tokens(label)
+            value_norm = _generic_norm(value)
+            label_norm = _generic_norm(label)
+            if (
+                not value_norm
+                or value_norm in discovered_entities
+                or label_norm not in _GENERIC_QUALIFIER_LABELS
+                or (requested_relation and label_tokens & requested_relation)
+            ):
+                continue
+            if len(value_norm) >= 2 and value_norm in query_norm:
+                qualifier_values.add(value_norm)
     for index, chunk in enumerate(chunks):
         text = str(chunk.text or "")
         normalized = _generic_norm(text)
         metadata = chunk.metadata or {}
         if metadata.get("block_type") == "heading" or re.search(r"table of contents|table des matieres", normalized):
             continue
-        fields = _generic_structured_fields(text)
+        raw_fields = _generic_structured_fields(text)
+        fields = list(raw_fields)
+        fields.extend(_generic_prose_fields(query_norm, text))
         if not fields:
             continue
+        record_entities = {
+            _generic_norm(value)
+            for label, value in _generic_structured_fields(text)
+            if _generic_norm(label) in {"system name", "system", "destination", "workflow", "application", "server"}
+        }
+        if explicit_entities and not (explicit_entities & record_entities):
+            continue
+        section_norm = _generic_norm(str(metadata.get("section", "")))
+        if explicit_sections and section_norm not in explicit_sections:
+            continue
+        if qualifier_values:
+            record_values = {_generic_norm(value) for _, value in _generic_structured_fields(text)}
+            if not (qualifier_values & record_values):
+                continue
         for label, value in fields:
             label_norm = _generic_norm(label)
             label_tokens = _generic_tokens(label)
             value_norm = _generic_norm(value)
             if not value_norm or not _generic_value_is_safe(label, value):
+                continue
+            if requested_relation and not (label_tokens & requested_relation):
                 continue
             # A one-token entity/glossary label is not an answer to an
             # attribute question. It is admitted only for explicit definition
@@ -1708,6 +1802,8 @@ def extract_evidence_generic_structured(
             entity_hit = any(_generic_norm(entity) in query_norm and _generic_norm(entity) in normalized for entity in entity_values)
             if entity_hit:
                 score += 6.0
+            if requested_relation == _GENERIC_RELATIONS["author"] and label_tokens & requested_relation and len(raw_fields) == 1:
+                score += 3.0
             # Prefer structured records over incidental prose and preserve source order.
             if metadata.get("block_type") in {"table_row", "row_record", "column_record", "key_value"}:
                 score += 2.0
@@ -1715,6 +1811,10 @@ def extract_evidence_generic_structured(
     if not candidates:
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
     candidates.sort(key=lambda item: (-item[0], item[1], _generic_norm(item[2].text)))
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        first_value, second_value = _generic_norm(candidates[0][4]), _generic_norm(candidates[1][4])
+        if first_value != second_value and not explicit_entities and not explicit_sections:
+            return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "AMBIGUOUS_MULTIPLE_TARGETS")
     multi_target = bool(re.search(r"\b(?:and|et|y)\b", query_norm))
     selected = candidates[:max(1, max_passages)] if multi_target else candidates[:1]
     passages: list[EvidencePassage] = []
