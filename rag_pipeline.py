@@ -53,6 +53,7 @@ __all__ = [
     "EvidencePassage",
     "EvidenceExtractionResult",
     "extract_evidence_exhaustive_specific",
+    "extract_evidence_generic_structured",
     "ExtractiveAnswerResult",
     "EmbeddingEncoder",
     "EmbeddingModelLoadError",
@@ -1581,6 +1582,135 @@ def extract_evidence_exhaustive_specific(
     for ordinal, (index, score, chunk, text, matched) in enumerate(selected, 1):
         source = PromptSource(index + 1, str(chunk.metadata.get("source_file", "")), str(chunk.metadata.get("location", "")), text, str(chunk.metadata.get("source_file", "")), False, dict(chunk.metadata))
         passages.append(EvidencePassage(f"E{ordinal}", index + 1, _evidence_source_hash(source), source.file_name, source.location, text, 0, score, matched))
+    if not passages:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
+    return EvidenceExtractionResult("EVIDENCE_FOUND", query, None, tuple(passages), tuple(p.source_id for p in passages), True, None, "EXPLICIT_ENTITY_ATTRIBUTE_MATCH")
+
+
+_GENERIC_STOPWORDS = {
+    "what", "which", "where", "when", "why", "how", "is", "are", "the", "a", "an",
+    "do", "does", "did", "me", "tell", "about", "for", "of", "in", "on", "to", "the",
+    "quel", "quelle", "quels", "quelles", "est", "sont", "du", "de", "des", "la", "le",
+    "un", "une", "et", "sur", "dans", "pour", "comment", "qui", "que", "se", "trouve",
+}
+_GENERIC_SYNONYM_GROUPS = (
+    {"wrote", "write", "written", "author", "auteur", "reviewer", "reviewed", "revue", "review"},
+    {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint"},
+    {"frequency", "often", "interval", "polling", "frequence", "fréquence", "schedule"},
+    {"count", "number", "retry", "nombre"},
+)
+
+
+def _generic_norm(value: str) -> str:
+    value = unicodedata.normalize("NFKD", str(value or ""))
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s.-]", " ", value.casefold())).strip()
+
+
+def _generic_tokens(value: str) -> set[str]:
+    return {token.rstrip("s") for token in re.findall(r"[\w.-]+", _generic_norm(value)) if token not in _GENERIC_STOPWORDS and len(token) > 1}
+
+
+def _generic_structured_fields(text: str) -> list[tuple[str, str]]:
+    """Parse structured key/value and matrix records without document aliases."""
+    fields: list[tuple[str, str]] = []
+    for part in re.split(r"\s*\|\s*|\r?\n+", str(text or "")):
+        part = part.strip()
+        if not part:
+            continue
+        match = re.match(r"^([^:=]{1,120})\s*[:=]\s*(.+)$", part)
+        if match:
+            label, value = match.group(1).strip(), match.group(2).strip()
+            if label and value:
+                fields.append((label, value))
+    return fields
+
+
+def _generic_value_is_safe(label: str, value: str) -> bool:
+    """Retain strict admission for high-risk technical value families."""
+    label_norm, value_norm = _generic_norm(label), _generic_norm(value)
+    if re.search(r"password|passwd|token|secret|api[- ]?key|private key", label_norm):
+        return False
+    if "port" in label_norm:
+        return bool(re.search(r"\b\d{1,5}\b", value_norm))
+    if "version" in label_norm or "revision" in label_norm or "release" in label_norm:
+        return bool(re.search(r"\b(?:v\s*)?\d+(?:\.\d+)+[a-z]?\b", value_norm))
+    if any(term in label_norm for term in ("directory", "folder", "path")):
+        return bool(re.search(r"(?:[a-z]:\\|\\\\|/(?:[\w.-]+/)+|(?:s?ftp|https?)://|to be defined)", value_norm))
+    if any(term in label_norm for term in ("frequency", "interval", "duration", "cache age")):
+        return bool(re.search(r"\d|daily|jour|hour|minute|second|frequence|frequency", value_norm))
+    return True
+
+
+def extract_evidence_generic_structured(
+    query: str,
+    chunks: Sequence[ChunkRecord],
+    *,
+    max_passages: int = 3,
+) -> EvidenceExtractionResult:
+    """Schema-driven evidence selection for structured specific-document chunks.
+
+    Field labels and entities are derived from the selected document's records;
+    no document-specific alias or ranking rule is required.  This function is
+    intentionally deterministic and performs no retrieval or model calls.
+    """
+    query_norm = _generic_norm(query)
+    query_tokens = _generic_tokens(query)
+    if not query_tokens:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
+    candidates: list[tuple[float, int, ChunkRecord, str, str]] = []
+    for index, chunk in enumerate(chunks):
+        text = str(chunk.text or "")
+        normalized = _generic_norm(text)
+        metadata = chunk.metadata or {}
+        if metadata.get("block_type") == "heading" or re.search(r"table of contents|table des matieres", normalized):
+            continue
+        fields = _generic_structured_fields(text)
+        if not fields:
+            continue
+        for label, value in fields:
+            label_norm = _generic_norm(label)
+            label_tokens = _generic_tokens(label)
+            value_norm = _generic_norm(value)
+            if not value_norm or not _generic_value_is_safe(label, value):
+                continue
+            score = float(len(label_tokens & query_tokens) * 4)
+            if label_norm and label_norm in query_norm:
+                score += 8.0
+            for group in _GENERIC_SYNONYM_GROUPS:
+                if label_tokens & group and query_tokens & group:
+                    score += 5.0
+            # An entity mention alone is never enough to answer a question;
+            # the requested field label must match first.
+            if score <= 0:
+                continue
+            # Dynamic entity discovery from structured records.
+            entity_values = [v for l, v in fields if _generic_norm(l) in {"system name", "system", "application", "workflow", "destination", "server"}]
+            entity_hit = any(_generic_norm(entity) in query_norm and _generic_norm(entity) in normalized for entity in entity_values)
+            if entity_hit:
+                score += 6.0
+            # Prefer structured records over incidental prose and preserve source order.
+            if metadata.get("block_type") in {"table_row", "row_record", "column_record", "key_value"}:
+                score += 2.0
+            candidates.append((score, index, chunk, label, value))
+    if not candidates:
+        return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
+    candidates.sort(key=lambda item: (-item[0], item[1], _generic_norm(item[2].text)))
+    multi_target = bool(re.search(r"\b(?:and|et|y)\b", query_norm))
+    selected = candidates[:max(1, max_passages)] if multi_target else candidates[:1]
+    passages: list[EvidencePassage] = []
+    seen: set[tuple[str, str]] = set()
+    for ordinal, (score, index, chunk, label, value) in enumerate(selected, 1):
+        key = (str(chunk.metadata.get("source_file", "")), chunk.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        source_file = str(chunk.metadata.get("source_file", ""))
+        location = str(chunk.metadata.get("location", ""))
+        passages.append(EvidencePassage(
+            f"E{ordinal}", index + 1, hashlib.sha256(chunk.text.encode("utf-8")).hexdigest(),
+            source_file, location, chunk.text, 0, round(score, 8), (label, value),
+        ))
     if not passages:
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
     return EvidenceExtractionResult("EVIDENCE_FOUND", query, None, tuple(passages), tuple(p.source_id for p in passages), True, None, "EXPLICIT_ENTITY_ATTRIBUTE_MATCH")

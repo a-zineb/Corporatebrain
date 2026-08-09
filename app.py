@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import os
 import chromadb
@@ -28,6 +29,7 @@ def _env_flag(name: str) -> bool:
 
 ENABLE_STRUCTURED_DOCX_INGESTION = _env_flag("ENABLE_STRUCTURED_DOCX_INGESTION")
 STRUCTURED_INGESTION_DRY_RUN = _env_flag("STRUCTURED_INGESTION_DRY_RUN")
+ENABLE_GENERIC_STRUCTURED_DIRECT = _env_flag("ENABLE_GENERIC_STRUCTURED_DIRECT")
 ENABLE_STARTUP_SYNC = _env_flag("ENABLE_STARTUP_SYNC")
 
 # Fonction pour ouvrir un fichier local
@@ -593,6 +595,11 @@ def resolve_direct_document(collection, active_filter, document_id):
 def structured_specific_direct_answer_enabled():
     """Enable exhaustive structured selection only for the approved opt-in path."""
     return os.getenv("ENABLE_STRUCTURED_DOCX_INGESTION", "").strip().casefold() == "true"
+
+
+def generic_structured_direct_answer_enabled():
+    """Enable schema-driven structured evidence only behind an explicit flag."""
+    return os.getenv("ENABLE_GENERIC_STRUCTURED_DIRECT", "").strip().casefold() == "true"
 
 
 def fetch_structured_specific_chunks(collection, selected_document):
@@ -1514,6 +1521,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             and direct_document is not None and structured_specific_direct_answer_enabled()
             and selected_document_has_structured_metadata(collection, direct_document)
         )
+        generic_structured_mode = structured_exhaustive_mode and generic_structured_direct_answer_enabled()
         precomputed_extractive_evidence = None
         precomputed_extractive_result = None
         selected_document_chunk_count = 0
@@ -1535,9 +1543,12 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 )
             else:
                 selection_started = time.perf_counter()
-                precomputed_extractive_evidence = rag_pipeline.extract_evidence_exhaustive_specific(
-                    user_query, structured_chunks
+                extractor = (
+                    rag_pipeline.extract_evidence_generic_structured
+                    if generic_structured_mode
+                    else rag_pipeline.extract_evidence_exhaustive_specific
                 )
+                precomputed_extractive_evidence = extractor(user_query, structured_chunks)
                 evidence_selection_ms = (time.perf_counter() - selection_started) * 1000
             precomputed_extractive_result = rag_pipeline.build_extractive_answer(
                 precomputed_extractive_evidence, current_lang
