@@ -28,6 +28,7 @@ def _env_flag(name: str) -> bool:
 
 ENABLE_STRUCTURED_DOCX_INGESTION = _env_flag("ENABLE_STRUCTURED_DOCX_INGESTION")
 STRUCTURED_INGESTION_DRY_RUN = _env_flag("STRUCTURED_INGESTION_DRY_RUN")
+ENABLE_STARTUP_SYNC = _env_flag("ENABLE_STARTUP_SYNC")
 
 # Fonction pour ouvrir un fichier local
 def open_local_file(path):
@@ -975,15 +976,19 @@ def chunk_text_data(parsed_data, max_length=1000):
 # ==========================================
 # 5.5 AUTO-INDEXATION DU DOSSIER LOCAL
 # ==========================================
-def sync_local_folder_v2():
-    local_files = [f for f in os.listdir(STORAGE_DIR) if os.path.isfile(os.path.join(STORAGE_DIR, f))]
+def sync_local_folder_v2(storage_dir=None, target_collection=None, target_embedding_model=None):
+    """Synchronize a folder explicitly; callers may inject isolated test resources."""
+    storage_dir = storage_dir or STORAGE_DIR
+    target_collection = target_collection or collection
+    target_embedding_model = target_embedding_model or embedding_model
+    local_files = [f for f in os.listdir(storage_dir) if os.path.isfile(os.path.join(storage_dir, f))]
     for filename in local_files:
-        file_path = os.path.join(STORAGE_DIR, filename)
+        file_path = os.path.join(storage_dir, filename)
         with open(file_path, "rb") as f:
             file_bytes = f.read()
         file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-        existing = collection.get(where={"file_hash": file_hash})
+        existing = target_collection.get(where={"file_hash": file_hash})
         if not existing or len(existing["ids"]) == 0:
             is_structured_docx = filename.casefold().endswith(".docx") and ENABLE_STRUCTURED_DOCX_INGESTION
 
@@ -1011,14 +1016,14 @@ def sync_local_folder_v2():
                     continue
 
                 try:
-                    embeddings = embedding_model.encode(payload["documents"]).tolist()
+                    embeddings = target_embedding_model.encode(payload["documents"]).tolist()
                     if len(embeddings) != expected_count:
                         raise ValueError("embedding count does not match structured chunk count")
                 except Exception:
                     # No collection.add call occurs unless extraction and all
                     # embeddings have succeeded.
                     raise
-                collection.add(
+                target_collection.add(
                     ids=payload["ids"],
                     embeddings=embeddings,
                     metadatas=payload["metadatas"],
@@ -1064,16 +1069,23 @@ def sync_local_folder_v2():
                     batch_docs = documents[i:i+batch_size]
 
                     try:
-                        batch_embs = embedding_model.encode(batch_docs).tolist()
+                        batch_embs = target_embedding_model.encode(batch_docs).tolist()
                         if not isinstance(batch_embs[0], list):
                             batch_embs = [batch_embs]
                         embeddings.extend(batch_embs)
                     except Exception as e:
                         print(f"Erreur d'embedding local : {e}")
 
-                collection.add(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=documents)
+                target_collection.add(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=documents)
 
-sync_local_folder_v2()
+
+def maybe_run_startup_sync():
+    """Run automatic synchronization only when explicitly enabled."""
+    if ENABLE_STARTUP_SYNC:
+        sync_local_folder_v2()
+
+
+maybe_run_startup_sync()
 bm25_index, bm25_docs, bm25_metas = build_bm25_index(collection, collection.count())
 
 # ==========================================

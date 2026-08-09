@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from docx import Document
+import structured_ingestion
 from structured_ingestion import extract_docx_blocks
 
 
@@ -21,6 +22,18 @@ def make_doc(paragraphs=(), tables=()):
 
 
 class StructuredDocxTests(unittest.TestCase):
+    def test_secret_placeholders_are_exactly_safe(self):
+        safe = structured_ingestion._contains_unredacted_secret_value
+        for value in ("TO BE DEFINED", "TBD", "N/A", "NA", "NOT DEFINED", "[REDACTED]", "***", "******", "*******"):
+            self.assertFalse(safe(f"Password = {value}"), value)
+        for value in ("ActualSecret", "TBDabc123", "TO BE DEFINED-Secret123"):
+            self.assertTrue(safe(f"Password = {value}"), value)
+
+    def test_token_and_api_key_values_remain_blocked(self):
+        safe = structured_ingestion._contains_unredacted_secret_value
+        self.assertTrue(safe("token = abc123"))
+        self.assertTrue(safe("api_key = sk-test"))
+
     def test_paragraphs_headings_and_section_inheritance(self):
         path = make_doc([("Section", "Heading 1"), ("Texte français", None)])
         blocks = extract_docx_blocks(path, "x.docx")

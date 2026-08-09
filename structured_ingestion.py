@@ -68,6 +68,12 @@ class NormalizedChunk:
 
 
 _SECRET_FIELD = re.compile(r"(password|passwd|token|api\s*key|secret|private\s*key)", re.I)
+_SAFE_SECRET_PLACEHOLDERS = frozenset({
+    "[redacted]", "***", "******", "*******", "to be defined", "n/a", "na", "not defined", "tbd",
+})
+_SECRET_VALUE = re.compile(
+    r"(?i)\b(?:password|passwd|token|api[_ -]?key|secret|private\s+key)\s*[:=]\s*(?P<value>[^|;,\n]+)"
+)
 
 
 def _clean(value: str) -> str:
@@ -76,6 +82,22 @@ def _clean(value: str) -> str:
 
 def _safe_value(label: str, value: str) -> str:
     return "[REDACTED]" if _SECRET_FIELD.search(label) else value
+
+
+def _is_safe_secret_placeholder(value: str) -> bool:
+    """Return true only for an exact, normalized non-secret placeholder."""
+    normalized = _clean(value).casefold()
+    if normalized.strip("*"):
+        normalized = re.sub(r"\*+$", "", normalized).strip()
+    return normalized in _SAFE_SECRET_PLACEHOLDERS
+
+
+def _contains_unredacted_secret_value(text: str) -> bool:
+    """Detect credential-labelled values while allowing exact safe placeholders."""
+    for match in _SECRET_VALUE.finditer(str(text or "")):
+        if not _is_safe_secret_placeholder(match.group("value")):
+            return True
+    return False
 
 
 def _cell_text(cell: Any) -> str:
@@ -313,7 +335,7 @@ def build_structured_docx_index_payload(
         if chunk_id in ids:
             raise ValueError("duplicate deterministic structured chunk ID")
         text = chunk["text"]
-        if any(secret in text.casefold() for secret in ("secret-value", "password =")) and "[redacted]" not in text.casefold():
+        if _contains_unredacted_secret_value(text):
             raise ValueError("unredacted secret-like value in structured payload")
         ids.append(chunk_id)
         documents.append(text)
