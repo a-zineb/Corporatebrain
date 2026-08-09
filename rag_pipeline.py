@@ -1618,6 +1618,10 @@ _GENERIC_RELATIONS = {
     "duration": {"duration", "age", "cache", "maximum"},
     "compression": {"compression", "compressed", "gzip", "zip"},
     "priority": {"priority", "priorite"},
+    "workflow": {"workflow", "workflows", "flow", "flows"},
+    "audit": {"audit", "audits"},
+    "archive": {"archive", "archived", "purge", "compression"},
+    "transformation": {"transform", "transformed", "transformation", "format"},
 }
 _GENERIC_QUALIFIER_LABELS = {"version", "release", "environment", "system", "system name", "workflow", "destination", "application", "region", "phase", "build"}
 
@@ -1683,6 +1687,18 @@ def _generic_prose_fields(query_norm: str, text: str) -> list[tuple[str, str]]:
         match = re.search(r"\b([A-Za-z][\w-]*)\s+(?:has|a)\s+priority\s+(?:over|sur)\s+([A-Za-z][\w-]*)\b", text, re.I)
         if match:
             fields.append(("priority", f"{match.group(1)} > {match.group(2)}"))
+    if "workflow" in query_norm or "workflows" in query_norm or "flux" in query_norm:
+        match = re.search(r"(?:workflows?|flux)\s*[:=]\s*(.+)", text, re.I)
+        if match:
+            fields.append(("workflows", match.group(1).strip()))
+    if "transformed" in query_norm or "transformation" in query_norm or "transforme" in query_norm:
+        match = re.search(r"(?:output|sortie).*?(?:transformed|transforme|transformation)\s*(?:as|en|:|=)\s*([^.;]+)", text, re.I)
+        if match:
+            fields.append(("output transformation", match.group(1).strip()))
+    if "audit" in query_norm and re.search(r"\baudit\s+(?:table|tables)\b", text, re.I):
+        match = re.search(r"\baudit\s+(?:table|tables)\s*[:=]?\s*([^.;]+)", text, re.I)
+        if match:
+            fields.append(("audit tables", match.group(1).strip()))
     return fields
 
 
@@ -1693,6 +1709,49 @@ def _generic_requested_relation(query_tokens: set[str]) -> set[str] | None:
     if matches:
         # Prefer the most specific relation when several generic words occur.
         return max(matches, key=lambda terms: len(query_tokens & terms))
+    return None
+
+
+def _generic_record_role(text: str, metadata: Mapping[str, Any]) -> str | None:
+    value = _generic_norm(" ".join([text, str(metadata.get("section", "")), str(metadata.get("location", ""))]))
+    if re.search(r"\bsystem name\b|\bsystem\b", value) and re.search(r"filedirectory|output directory|output|\bhost\b|\bprotocol\b", value):
+        return "distribution"
+    if re.search(r"duplicate|doublon|dupliqu|param_check_dup|crc", value):
+        return "duplicate_check"
+    if re.search(r"version|historique|history|release|revision", value):
+        return "version_history"
+    if re.search(r"glossary|glossaire|abbreviation|abreviation|definition", value):
+        return "glossary"
+    if re.search(r"archive|archivage|purge|retention|compression", value):
+        return "archive"
+    if re.search(r"audit|journal|log", value):
+        return "audit"
+    if re.search(r"distribution|output|sortie|destination", value):
+        return "distribution"
+    if re.search(r"collection|input|entree|server details|collecte", value):
+        return "collection"
+    if re.search(r"workflow|flux|flow", value):
+        return "workflow"
+    return None
+
+
+def _generic_query_role(query_norm: str) -> str | None:
+    if re.search(r"collection\s+(?:server|host|ip|directory|protocol)|input\s+(?:server|host|directory|workflow)", query_norm):
+        return "collection"
+    if re.search(r"distribution|output\s+(?:server|host|directory|protocol)|bi\s+host", query_norm):
+        return "distribution"
+    if re.search(r"archive|purge|retention|compression", query_norm):
+        return "archive"
+    if re.search(r"duplicate|doublon|dupliqu|crc", query_norm):
+        return "duplicate_check"
+    if re.search(r"version|release|revision", query_norm):
+        return "version_history"
+    if re.search(r"glossary|definition|mean|stand for", query_norm):
+        return "glossary"
+    if "audit" in query_norm:
+        return "audit"
+    if "workflow" in query_norm or "workflows" in query_norm:
+        return "workflow"
     return None
 
 
@@ -1711,6 +1770,7 @@ def extract_evidence_generic_structured(
     query_norm = _generic_norm(query)
     query_tokens = _generic_tokens(query)
     requested_relation = _generic_requested_relation(query_tokens)
+    requested_role = _generic_query_role(query_norm)
     definition_query = bool(
         re.search(r"\b(?:what is|what does|define|meaning of|que signifie|que veut dire)\b", query_norm)
     ) and not (query_tokens & _GENERIC_ATTRIBUTE_HINTS)
@@ -1755,6 +1815,11 @@ def extract_evidence_generic_structured(
         fields = list(raw_fields)
         fields.extend(_generic_prose_fields(query_norm, text))
         if not fields:
+            continue
+        record_role = _generic_record_role(text, metadata)
+        if requested_role and record_role and record_role != requested_role:
+            continue
+        if requested_role and not record_role and requested_role in {"collection", "distribution", "archive", "duplicate_check", "version_history", "audit"} and not (requested_role == "collection" and not explicit_entities):
             continue
         record_entities = {
             _generic_norm(value)

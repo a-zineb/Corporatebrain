@@ -107,7 +107,7 @@ def is_direct_answer_suitable(query):
         "explain", "expliquer", "explique", "pourquoi", "por que", "porque", "why", "compare", "comparaison",
         "difference", "differences", "resume", "summarize", "overview", "synthese",
         "analyze", "analyse", "interpret", "interprete", "recommend", "recommand",
-        "workflow", "architecture", "broad", "how does", "how do", "comment fonctionne",
+        "architecture", "broad", "how does", "how do", "comment fonctionne", "whole workflow",
     )
     if any(marker in normalized for marker in unsuitable):
         return False
@@ -121,7 +121,11 @@ def is_direct_answer_suitable(query):
         "horario", "frecuencia", "servidor", "protocolo", "puerto", "patron de nombre de archivo", "patron",
     )
     technical_attribute_query = any(marker in normalized for marker in technical_attribute_markers)
-    if re.search(r"\bhow\b", normalized) and "how many" not in normalized and not technical_attribute_query:
+    factual_how = re.search(
+        r"\bhow\b.*\b(?:detected|detecte|often|frequently|protocol|collected|files|transformed|many)\b",
+        normalized,
+    )
+    if re.search(r"\bhow\b", normalized) and "how many" not in normalized and not technical_attribute_query and not factual_how:
         return False
     concise_factual_patterns = (
         r"\b(?:total|number of|count|nombre total|numero de|combien)\b",
@@ -132,6 +136,7 @@ def is_direct_answer_suitable(query):
         r"\b(?:version|specification version|version de especificacion)\b",
         r"\b(?:filename pattern|duplicate detection|duplicate check|duplicate files|parameter|configuration parameter|input directory|output directory|folder|path|cache age|duration|schedule|frequency|table|server|hostname|protocol|port)\b",
         r"\b(?:modele de fichier|detection des doublons|parametre|repertoire d entree|repertoire de sortie|dossier|chemin|duree|frequence|a quelle frequence|tous les combien|how often|serveur|protocole|puerto|patron de nombre de archivo|patron)\b",
+        r"\b(?:input workflows?|workflows?|collection server|server ip|output transformed|transformation|post[- ]collection|audit tables?|archive modes?)\b",
     )
     if any(re.search(pattern, normalized) for pattern in concise_factual_patterns):
         return True
