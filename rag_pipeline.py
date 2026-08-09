@@ -1594,11 +1594,17 @@ _GENERIC_STOPWORDS = {
     "un", "une", "et", "sur", "dans", "pour", "comment", "qui", "que", "se", "trouve",
 }
 _GENERIC_SYNONYM_GROUPS = (
-    {"wrote", "write", "written", "author", "auteur", "reviewer", "reviewed", "revue", "review"},
+    {"wrote", "write", "written", "author", "auteur", "ecrit", "redige"},
+    {"reviewer", "reviewed", "revue", "review"},
     {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint"},
     {"frequency", "often", "interval", "polling", "frequence", "fréquence", "schedule"},
     {"count", "number", "retry", "nombre"},
 )
+_GENERIC_ATTRIBUTE_HINTS = {
+    "author", "reviewer", "wrote", "version", "directory", "folder", "path", "endpoint",
+    "frequency", "interval", "count", "duration", "age", "owner", "protocol", "mode",
+    "host", "hostname", "server", "port", "parameter", "table", "schedule", "region",
+}
 
 
 def _generic_norm(value: str) -> str:
@@ -1629,6 +1635,7 @@ def _generic_structured_fields(text: str) -> list[tuple[str, str]]:
 def _generic_value_is_safe(label: str, value: str) -> bool:
     """Retain strict admission for high-risk technical value families."""
     label_norm, value_norm = _generic_norm(label), _generic_norm(value)
+    raw_value = str(value or "").strip()
     if re.search(r"password|passwd|token|secret|api[- ]?key|private key", label_norm):
         return False
     if "port" in label_norm:
@@ -1636,7 +1643,7 @@ def _generic_value_is_safe(label: str, value: str) -> bool:
     if "version" in label_norm or "revision" in label_norm or "release" in label_norm:
         return bool(re.search(r"\b(?:v\s*)?\d+(?:\.\d+)+[a-z]?\b", value_norm))
     if any(term in label_norm for term in ("directory", "folder", "path")):
-        return bool(re.search(r"(?:[a-z]:\\|\\\\|/(?:[\w.-]+/)+|(?:s?ftp|https?)://|to be defined)", value_norm))
+        return bool(re.search(r"(?:[a-z]:\\|\\\\|/(?:[\w.-]+/)+|(?:s?ftp|https?)://|to be defined)", raw_value, re.I))
     if any(term in label_norm for term in ("frequency", "interval", "duration", "cache age")):
         return bool(re.search(r"\d|daily|jour|hour|minute|second|frequence|frequency", value_norm))
     return True
@@ -1656,6 +1663,9 @@ def extract_evidence_generic_structured(
     """
     query_norm = _generic_norm(query)
     query_tokens = _generic_tokens(query)
+    definition_query = bool(
+        re.search(r"\b(?:what is|what does|define|meaning of|que signifie|que veut dire)\b", query_norm)
+    ) and not (query_tokens & _GENERIC_ATTRIBUTE_HINTS)
     if not query_tokens:
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
     candidates: list[tuple[float, int, ChunkRecord, str, str]] = []
@@ -1673,6 +1683,15 @@ def extract_evidence_generic_structured(
             label_tokens = _generic_tokens(label)
             value_norm = _generic_norm(value)
             if not value_norm or not _generic_value_is_safe(label, value):
+                continue
+            # A one-token entity/glossary label is not an answer to an
+            # attribute question. It is admitted only for explicit definition
+            # queries; requested field labels remain authoritative otherwise.
+            if (
+                not definition_query
+                and label_tokens.intersection(query_tokens)
+                and not (label_tokens & _GENERIC_ATTRIBUTE_HINTS)
+            ):
                 continue
             score = float(len(label_tokens & query_tokens) * 4)
             if label_norm and label_norm in query_norm:

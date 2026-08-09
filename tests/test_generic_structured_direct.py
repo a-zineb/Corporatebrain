@@ -63,6 +63,43 @@ class GenericStructuredDirectTests(unittest.TestCase):
         second = extract_evidence_generic_structured("What is the transfer mode for FRAUD_ENGINE?", self.chunks).to_json()
         self.assertEqual(first, second)
 
+    def test_entity_glossary_does_not_beat_requested_field(self):
+        chunks = [
+            ChunkRecord(
+                "Tango = Plateforme qui permet aux utilisateurs d'accéder à des services bancaires.",
+                {"source_file": "tango.docx", "location": "Glossary", "block_type": "paragraph"},
+            ),
+            ChunkRecord(
+                "Reviewer = Nawfal ENNAJI",
+                {"source_file": "tango.docx", "location": "Table 0", "block_type": "key_value"},
+            ),
+            ChunkRecord(
+                "Collection Directory = /opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+                {"source_file": "tango.docx", "location": "Table 1", "block_type": "key_value"},
+            ),
+        ]
+        author = extract_evidence_generic_structured("Who reviewed Tango?", chunks)
+        directory = extract_evidence_generic_structured("What is the Tango collection directory?", chunks)
+        meaning = extract_evidence_generic_structured("What is Tango?", chunks)
+        self.assertEqual(author.status, "EVIDENCE_FOUND")
+        self.assertIn("Nawfal ENNAJI", author.passages[0].text)
+        self.assertEqual(directory.status, "EVIDENCE_FOUND")
+        self.assertIn("/opt/cft/v3.0.1", directory.passages[0].text)
+        self.assertEqual(meaning.status, "EVIDENCE_FOUND")
+        self.assertIn("Tango =", meaning.passages[0].text)
+
+    def test_multilingual_author_and_reviewer_relations_are_distinct(self):
+        chunks = [
+            ChunkRecord("Écrit par = Alice Martin", {"source_file": "x.docx", "block_type": "table_row"}),
+            ChunkRecord("Revue par = Bob Smith", {"source_file": "x.docx", "block_type": "table_row"}),
+        ]
+        author = extract_evidence_generic_structured("Who wrote the specification?", chunks)
+        reviewer = extract_evidence_generic_structured("Who reviewed the specification?", chunks)
+        self.assertEqual(author.status, "EVIDENCE_FOUND")
+        self.assertIn("Alice Martin", author.passages[0].text)
+        self.assertEqual(reviewer.status, "EVIDENCE_FOUND")
+        self.assertIn("Bob Smith", reviewer.passages[0].text)
+
 
 if __name__ == "__main__":
     unittest.main()
