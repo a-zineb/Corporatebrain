@@ -1595,26 +1595,27 @@ _GENERIC_STOPWORDS = {
 }
 _GENERIC_SYNONYM_GROUPS = (
     {"wrote", "write", "written", "authored", "author", "auteur", "ecrit", "redige"},
-    {"reviewer", "reviewed", "revue", "review"},
+    {"reviewer", "reviewed", "revu", "revue", "review", "effectue"},
     {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint"},
     {"frequency", "often", "interval", "polling", "frequence", "fréquence", "schedule"},
     {"count", "number", "retry", "nombre"},
 )
 _GENERIC_ATTRIBUTE_HINTS = {
-    "author", "reviewer", "wrote", "version", "directory", "folder", "path", "endpoint",
+    "author", "auteur", "ecrit", "redige", "reviewer", "review", "revue", "revu", "effectue", "effectu", "checked", "wrote", "version", "directory", "folder", "path", "endpoint",
     "frequency", "interval", "count", "duration", "age", "owner", "protocol", "mode",
     "host", "hostname", "server", "port", "parameter", "table", "schedule", "region",
     "duplicate", "mechanism", "compression", "priority",
 }
 _GENERIC_RELATIONS = {
     "author": {"wrote", "write", "written", "authored", "author", "auteur", "ecrit", "redige"},
-    "reviewer": {"reviewer", "reviewed", "review", "revue"},
-    "directory": {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint"},
-    "frequency": {"frequency", "often", "interval", "polling", "frequence", "schedule", "how"},
+    "reviewer": {"reviewer", "reviewed", "review", "checked", "check", "revue", "revised", "revu", "reviseur", "effectue", "effectu"},
+    "directory": {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint", "output", "destination", "chemin"},
+    "frequency": {"frequency", "often", "interval", "polling", "frequence", "schedule", "how", "distribution", "collection", "purge", "cleanup", "archive"},
     "count": {"count", "number", "nombre", "instances", "retry"},
     "version": {"version", "revision", "release"},
     "protocol": {"protocol", "mode", "transfer"},
-    "duplicate": {"duplicate", "duplicates", "doublon", "dupliqu", "mechanism", "detection"},
+    "port": {"port"},
+    "duplicate": {"duplicate", "duplicates", "doublon", "dupliqu", "mechanism", "detection", "detecte", "verification", "verifie", "checks", "check"},
     "duration": {"duration", "age", "cache", "maximum"},
     "compression": {"compression", "compressed", "gzip", "zip"},
     "priority": {"priority", "priorite"},
@@ -1668,6 +1669,31 @@ def _generic_value_is_safe(label: str, value: str) -> bool:
     return True
 
 
+def _generic_relation_value_compatible(relation: set[str] | None, label: str, value: str) -> bool:
+    """Reject structurally incompatible fields before ranking candidates."""
+    if not relation:
+        return True
+    label_norm = _generic_norm(label)
+    value_text = str(value or "")
+    if relation == _GENERIC_RELATIONS["frequency"]:
+        return bool(re.search(r"frequency|frequence|interval|schedule|collection|distribution|purge|cleanup|archive", label_norm))
+    if relation == _GENERIC_RELATIONS["directory"]:
+        return bool(re.search(r"directory|folder|path|filedirectory|endpoint|dossier|repertoire", label_norm))
+    if relation == _GENERIC_RELATIONS["protocol"]:
+        return bool(re.search(r"protocol|mode|transfer", label_norm))
+    if relation == _GENERIC_RELATIONS["count"]:
+        return bool(re.search(r"count|number|nombre|instances|retry", label_norm))
+    if relation == _GENERIC_RELATIONS["version"]:
+        return bool(re.search(r"version|revision|release", label_norm))
+    if relation == _GENERIC_RELATIONS["duration"]:
+        return bool(re.search(r"duration|age|cache", label_norm))
+    if relation == _GENERIC_RELATIONS["duplicate"]:
+        return bool(re.search(r"duplicate|doublon|dupliqu|mechanism|detection|verification", label_norm))
+    if relation & {"port"} or "port" in label_norm:
+        return bool(re.search(r"port", label_norm) or re.search(r"port\s*[:=]", value_text, re.I)) and bool(re.search(r"\b\d{1,5}\b", value_text))
+    return True
+
+
 def _generic_prose_fields(query_norm: str, text: str) -> list[tuple[str, str]]:
     """Extract a small, explicit set of safe factual prose relations."""
     fields: list[tuple[str, str]] = []
@@ -1703,6 +1729,14 @@ def _generic_prose_fields(query_norm: str, text: str) -> list[tuple[str, str]]:
 
 
 def _generic_requested_relation(query_tokens: set[str]) -> set[str] | None:
+    if "port" in query_tokens:
+        return _GENERIC_RELATIONS["port"]
+    if query_tokens & {"directory", "folder", "path", "output", "destination", "filedirectory", "repertoire", "repertoire", "dossier", "chemin"}:
+        return _GENERIC_RELATIONS["directory"]
+    if query_tokens & {"collect", "collected", "collecte", "collectes", "collection"}:
+        return _GENERIC_RELATIONS["frequency"]
+    if query_tokens & {"written", "write", "ecrit", "ecrits", "crit"} and query_tokens & {"files", "file", "fichiers", "fichier"}:
+        return _GENERIC_RELATIONS["directory"]
     matches = [terms for terms in _GENERIC_RELATIONS.values() if query_tokens & terms]
     if len(matches) == 1:
         return matches[0]
@@ -1736,11 +1770,13 @@ def _generic_record_role(text: str, metadata: Mapping[str, Any]) -> str | None:
 
 
 def _generic_query_role(query_norm: str) -> str | None:
-    if re.search(r"collection\s+(?:server|host|ip|directory|protocol)|input\s+(?:server|host|directory|workflow)", query_norm):
+    # Relation verbs constrain role even when the question does not repeat a
+    # field label (for example, "How often are files collected?").
+    if re.search(r"\b(?:collect|collecte|collectes|collected|collection|input)\b", query_norm):
         return "collection"
-    if re.search(r"distribution|output\s+(?:server|host|directory|protocol)|bi\s+host", query_norm):
+    if re.search(r"\b(?:distribute|distributed|distribution|distribue|sortie|output)\b", query_norm):
         return "distribution"
-    if re.search(r"archive|purge|retention|compression", query_norm):
+    if re.search(r"\b(?:archive|archived|archivage|purge|purged|retention|compression)\b", query_norm):
         return "archive"
     if re.search(r"duplicate|doublon|dupliqu|crc", query_norm):
         return "duplicate_check"
@@ -1819,7 +1855,13 @@ def extract_evidence_generic_structured(
         record_role = _generic_record_role(text, metadata)
         if requested_role and record_role and record_role != requested_role:
             continue
-        if requested_role and not record_role and requested_role in {"collection", "distribution", "archive", "duplicate_check", "version_history", "audit"} and not (requested_role == "collection" and not explicit_entities):
+        if requested_role and not record_role and requested_role in {"collection", "distribution", "archive", "duplicate_check", "version_history", "audit"} and not (
+            requested_role in {"collection", "distribution"} and not explicit_entities and any(
+                requested_relation == relation_set for relation_set in (
+                    _GENERIC_RELATIONS["directory"], _GENERIC_RELATIONS["frequency"], _GENERIC_RELATIONS["port"]
+                )
+            )
+        ):
             continue
         record_entities = {
             _generic_norm(value)
@@ -1839,9 +1881,12 @@ def extract_evidence_generic_structured(
             label_norm = _generic_norm(label)
             label_tokens = _generic_tokens(label)
             value_norm = _generic_norm(value)
-            if not value_norm or not _generic_value_is_safe(label, value):
+            if not value_norm or not _generic_relation_value_compatible(requested_relation, label, value) or not _generic_value_is_safe(label, value):
                 continue
-            if requested_relation and not (label_tokens & requested_relation):
+            if requested_relation and not (label_tokens & requested_relation) and not (
+                requested_relation == _GENERIC_RELATIONS["port"]
+                and _generic_relation_value_compatible(requested_relation, label, value)
+            ):
                 continue
             # A one-token entity/glossary label is not an answer to an
             # attribute question. It is admitted only for explicit definition
@@ -1853,6 +1898,10 @@ def extract_evidence_generic_structured(
             ):
                 continue
             score = float(len(label_tokens & query_tokens) * 4)
+            if requested_relation and label_tokens & requested_relation:
+                score += 4.0
+            if requested_relation == _GENERIC_RELATIONS["port"] and _generic_relation_value_compatible(requested_relation, label, value):
+                score += 8.0
             if label_norm and label_norm in query_norm:
                 score += 8.0
             for group in _GENERIC_SYNONYM_GROUPS:

@@ -139,6 +139,41 @@ class GenericStructuredDirectTests(unittest.TestCase):
         ]
         self.assertEqual(extract_evidence_generic_structured("How often are files collected?", chunks).status, "NO_EXPLICIT_EVIDENCE")
 
+    def test_collection_verbs_select_collection_over_distribution_frequency(self):
+        chunks = [
+            ChunkRecord("Collection Frequency = Every 5 minutes", {"source_file": "x.docx", "block_type": "key_value"}),
+            ChunkRecord("Distribution Frequency = Once per day", {"source_file": "x.docx", "block_type": "key_value"}),
+        ]
+        result = extract_evidence_generic_structured("How often are files collected?", chunks)
+        self.assertEqual(result.status, "EVIDENCE_FOUND")
+        self.assertIn("Every 5 minutes", result.passages[0].text)
+
+    def test_requested_port_rejects_frequency_and_selects_numeric_port(self):
+        chunks = [
+            ChunkRecord("Collection Frequency = Every 5 minutes", {"source_file": "x.docx", "block_type": "key_value"}),
+            ChunkRecord("Connection Protocol = SFTP (port: 2222)", {"source_file": "x.docx", "block_type": "key_value"}),
+        ]
+        port = extract_evidence_generic_structured("What port is used for collection?", chunks)
+        frequency = extract_evidence_generic_structured("How often are files collected?", chunks)
+        self.assertEqual(port.status, "EVIDENCE_FOUND")
+        self.assertIn("2222", port.passages[0].text)
+        self.assertEqual(frequency.status, "EVIDENCE_FOUND")
+        self.assertIn("Every 5 minutes", frequency.passages[0].text)
+
+    def test_reviewer_paraphrases_and_directory_paraphrases(self):
+        chunks = [
+            ChunkRecord("Revue par = Alice", {"source_file": "x.docx", "block_type": "key_value"}),
+            ChunkRecord("FileDirectory = /data/out", {"source_file": "x.docx", "block_type": "key_value"}),
+        ]
+        for query in ("Who reviewed the specification?", "Who was the reviewer?", "Qui a revu la spécification ?", "Qui a effectué la revue ?"):
+            result = extract_evidence_generic_structured(query, chunks)
+            self.assertEqual(result.status, "EVIDENCE_FOUND", query)
+            self.assertIn("Alice", result.passages[0].text)
+        for query in ("What is the output directory?", "Where are output files written?", "What folder receives the output files?", "Quel est le répertoire de sortie ?"):
+            result = extract_evidence_generic_structured(query, chunks)
+            self.assertEqual(result.status, "EVIDENCE_FOUND", query)
+            self.assertIn("/data/out", result.passages[0].text)
+
     def test_redacted_password_does_not_block_allowed_host(self):
         chunks = [ChunkRecord("System name = BI | Host = 10.0.0.1 | Password = [REDACTED]", {"source_file": "x.docx", "block_type": "column_record"})]
         result = extract_evidence_generic_structured("What is the BI host?", chunks)
