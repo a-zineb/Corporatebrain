@@ -160,6 +160,46 @@ class GenericStructuredDirectTests(unittest.TestCase):
         self.assertEqual(frequency.status, "EVIDENCE_FOUND")
         self.assertIn("Every 5 minutes", frequency.passages[0].text)
 
+    def test_processing_status_fields_use_exact_generic_relations(self):
+        chunks = [
+            ChunkRecord("Enrichissement = N/A", {"source_file": "synthetic.docx", "block_type": "key_value"}),
+            ChunkRecord("Normalisation = N/A", {"source_file": "synthetic.docx", "block_type": "key_value"}),
+            ChunkRecord("Correlation = Enabled", {"source_file": "synthetic.docx", "block_type": "key_value"}),
+            ChunkRecord("Database Lookups = Disabled", {"source_file": "synthetic.docx", "block_type": "key_value"}),
+        ]
+        expected = {
+            "Is enrichment performed?": "Enrichissement = N/A",
+            "Is normalization performed?": "Normalisation = N/A",
+            "Is correlation performed?": "Correlation = Enabled",
+            "Are database lookups performed?": "Database Lookups = Disabled",
+            "L'enrichissement est-il effectué ?": "Enrichissement = N/A",
+            "La normalisation est-elle effectuée ?": "Normalisation = N/A",
+        }
+        for query, value in expected.items():
+            result = extract_evidence_generic_structured(query, chunks)
+            self.assertEqual(result.status, "EVIDENCE_FOUND", query)
+            self.assertEqual(result.passages[0].text, value)
+
+    def test_file_duplicate_and_udr_relations_are_distinct(self):
+        chunks = [
+            ChunkRecord("Duplicate files are detected using CRC over the complete collected file.", {"source_file": "x.docx", "block_type": "paragraph"}),
+            ChunkRecord("Duplicate UDR Check = N/A", {"source_file": "x.docx", "block_type": "key_value"}),
+        ]
+        file_result = extract_evidence_generic_structured("How are duplicate files detected?", chunks)
+        udr_result = extract_evidence_generic_structured("Is Duplicate UDR Check performed?", chunks)
+        self.assertEqual(file_result.status, "EVIDENCE_FOUND")
+        self.assertIn("CRC", file_result.passages[0].text)
+        self.assertEqual(udr_result.status, "EVIDENCE_FOUND")
+        self.assertIn("N/A", udr_result.passages[0].text)
+
+    def test_generic_duplicate_wording_fails_closed_when_concepts_coexist(self):
+        chunks = [
+            ChunkRecord("Duplicate files are detected using CRC.", {"source_file": "x.docx", "block_type": "paragraph"}),
+            ChunkRecord("Duplicate UDR Check = N/A", {"source_file": "x.docx", "block_type": "key_value"}),
+        ]
+        result = extract_evidence_generic_structured("What is the duplicate checking status?", chunks)
+        self.assertEqual(result.status, "NO_EXPLICIT_EVIDENCE")
+
     def test_reviewer_paraphrases_and_directory_paraphrases(self):
         chunks = [
             ChunkRecord("Revue par = Alice", {"source_file": "x.docx", "block_type": "key_value"}),

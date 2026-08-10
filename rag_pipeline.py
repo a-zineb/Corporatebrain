@@ -1599,12 +1599,21 @@ _GENERIC_SYNONYM_GROUPS = (
     {"directory", "folder", "path", "repertoire", "dossier", "filedirectory", "endpoint"},
     {"frequency", "often", "interval", "polling", "frequence", "fréquence", "schedule"},
     {"count", "number", "retry", "nombre"},
+    {"enrichment", "enrichissement"},
+    {"normalization", "normalisation"},
+    {"correlation"},
+    {"filtering", "filtrage", "filter"},
+    {"selection", "selection"},
+    {"database", "databases", "lookup", "lookups"},
+    {"duplicate", "udr", "check", "checks"},
 )
 _GENERIC_ATTRIBUTE_HINTS = {
     "author", "auteur", "ecrit", "redige", "reviewer", "review", "revue", "revu", "effectue", "effectu", "checked", "wrote", "version", "directory", "folder", "path", "endpoint",
     "frequency", "interval", "count", "duration", "age", "owner", "protocol", "mode",
     "host", "hostname", "server", "port", "parameter", "table", "schedule", "region",
-    "duplicate", "mechanism", "compression", "priority",
+    "duplicate", "mechanism", "compression", "priority", "enrichment", "enrichissement",
+    "normalization", "normalisation", "correlation", "filtering", "filtrage", "selection",
+    "database", "databases", "lookup", "lookups", "udr", "check", "checks",
 }
 _GENERIC_RELATIONS = {
     "author": {"wrote", "write", "written", "authored", "author", "auteur", "ecrit", "redige"},
@@ -1623,6 +1632,14 @@ _GENERIC_RELATIONS = {
     "audit": {"audit", "audits"},
     "archive": {"archive", "archived", "purge", "compression"},
     "transformation": {"transform", "transformed", "transformation", "format"},
+    "enrichment": {"enrichment", "enrichissement"},
+    "normalization": {"normalization", "normalisation"},
+    "correlation": {"correlation"},
+    "filtering": {"filtering", "filtrage", "filter"},
+    "selection": {"selection", "selection"},
+    "database_lookup": {"database", "databases", "lookup", "lookups", "lookups"},
+    "duplicate_udr_check": {"duplicate", "udr", "check", "checks"},
+    "duplicate_file": {"duplicate", "duplicates", "doublon", "dupliqu", "mechanism", "detection", "detecte", "verification", "verifie", "file", "files", "fichier", "fichiers", "batch", "collected"},
 }
 _GENERIC_QUALIFIER_LABELS = {"version", "release", "environment", "system", "system name", "workflow", "destination", "application", "region", "phase", "build"}
 
@@ -1687,7 +1704,7 @@ def _generic_relation_value_compatible(relation: set[str] | None, label: str, va
         return bool(re.search(r"version|revision|release", label_norm))
     if relation == _GENERIC_RELATIONS["duration"]:
         return bool(re.search(r"duration|age|cache", label_norm))
-    if relation == _GENERIC_RELATIONS["duplicate"]:
+    if relation == _GENERIC_RELATIONS["duplicate"] or relation == _GENERIC_RELATIONS["duplicate_file"]:
         return bool(re.search(r"duplicate|doublon|dupliqu|mechanism|detection|verification", label_norm))
     if relation & {"port"} or "port" in label_norm:
         return bool(re.search(r"port", label_norm) or re.search(r"port\s*[:=]", value_text, re.I)) and bool(re.search(r"\b\d{1,5}\b", value_text))
@@ -1731,6 +1748,13 @@ def _generic_prose_fields(query_norm: str, text: str) -> list[tuple[str, str]]:
 def _generic_requested_relation(query_tokens: set[str]) -> set[str] | None:
     if "port" in query_tokens:
         return _GENERIC_RELATIONS["port"]
+    if query_tokens & {"file", "files", "fichier", "fichiers", "batch", "collected"} and query_tokens & {"duplicate", "doublon", "dupliqu", "check", "checking", "detection", "detecte", "mechanism"}:
+        return _GENERIC_RELATIONS["duplicate_file"]
+    for relation_name in ("enrichment", "normalization", "correlation", "filtering", "selection", "database_lookup"):
+        if query_tokens & _GENERIC_RELATIONS[relation_name]:
+            return _GENERIC_RELATIONS[relation_name]
+    if "udr" in query_tokens:
+        return _GENERIC_RELATIONS["duplicate_udr_check"]
     if query_tokens & {"directory", "folder", "path", "output", "destination", "filedirectory", "repertoire", "repertoire", "dossier", "chemin"}:
         return _GENERIC_RELATIONS["directory"]
     if query_tokens & {"collect", "collected", "collecte", "collectes", "collection"}:
@@ -1881,6 +1905,11 @@ def extract_evidence_generic_structured(
             label_norm = _generic_norm(label)
             label_tokens = _generic_tokens(label)
             value_norm = _generic_norm(value)
+            # File-level duplicate questions must never be answered by the
+            # separate UDR status field, even though both labels contain
+            # generic duplicate/check vocabulary.
+            if requested_relation == _GENERIC_RELATIONS["duplicate_file"] and "udr" in label_tokens:
+                continue
             if not value_norm or not _generic_relation_value_compatible(requested_relation, label, value) or not _generic_value_is_safe(label, value):
                 continue
             if requested_relation and not (label_tokens & requested_relation) and not (
@@ -1924,6 +1953,18 @@ def extract_evidence_generic_structured(
             candidates.append((score, index, chunk, label, value))
     if not candidates:
         return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "NO_MATCH")
+    # A bare "duplicate checking" question is ambiguous when the selected
+    # document exposes both file-level detection and a distinct UDR status.
+    # Require the user to name the target concept rather than guessing.
+    duplicate_words = query_tokens & {"duplicate", "doublon", "dupliqu", "check", "checking", "detection", "mechanism"}
+    has_file_context = query_tokens & {"file", "files", "fichier", "fichiers", "batch", "collected"}
+    has_udr_context = "udr" in query_tokens
+    if duplicate_words and not has_file_context and not has_udr_context:
+        labels = {_generic_norm(item[3]) for item in candidates}
+        if any("udr" in _generic_tokens(label) for label in labels) and any(
+            "mechanism" in _generic_tokens(label) or "detection" in _generic_tokens(label) for label in labels
+        ):
+            return EvidenceExtractionResult("NO_EXPLICIT_EVIDENCE", query, None, (), (), False, "AMBIGUOUS_DUPLICATE_RELATION")
     candidates.sort(key=lambda item: (-item[0], item[1], _generic_norm(item[2].text)))
     if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
         first_value, second_value = _generic_norm(candidates[0][4]), _generic_norm(candidates[1][4])
