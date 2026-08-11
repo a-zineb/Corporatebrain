@@ -43,3 +43,7 @@ Thumbs.db
 .env
 secrets.toml
 .streamlit/secrets.toml
+.run/
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local

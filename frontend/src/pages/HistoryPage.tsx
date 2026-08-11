@@ -1,0 +1,1 @@
+export function HistoryPage(){return <section className="page"><header><div><h1>History</h1><p>Conversation persistence is not available in the current backend.</p></div></header><div className="empty">Conversations from the current chat remain available until this browser session ends.</div></section>}

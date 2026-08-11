@@ -1,0 +1,2 @@
+import {ExternalLink} from 'lucide-react';import type {Source} from '../../types';
+export function SourceCard({source,onOpen}:{source:Source;onOpen:(s:Source)=>void}){return <article className="source-card"><div><strong>{source.document}</strong><small>{source.location}</small><p>{source.text.slice(0,180)}</p></div><button onClick={()=>onOpen(source)}><ExternalLink size={15}/> Open</button></article>}

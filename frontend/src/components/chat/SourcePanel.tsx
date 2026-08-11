@@ -1,0 +1,2 @@
+import {ArrowLeft,X} from 'lucide-react';import type {Source} from '../../types';
+export function SourcePanel({source,onClose}:{source:Source;onClose:()=>void}){return <div className="source-panel"><header><button onClick={onClose}><ArrowLeft/> Back</button><button onClick={onClose} aria-label="Close"><X/></button></header><span className="badge">{source.file_type.toUpperCase()}</span><h2>{source.document}</h2><small>{source.location}</small><div className="highlight">{source.text}</div></div>}
