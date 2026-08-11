@@ -9,6 +9,7 @@ import re
 from typing import Any, Iterable
 
 from docx import Document
+from document_engine import LogicalTable, read_docx_structure
 
 
 @dataclass
@@ -127,7 +128,35 @@ def _key_value_blocks(rows: list[list[str]], source_file: str, location: str, se
             section=section, table_index=table_index, row_index=row_index,
             metadata={"table_shape": "key_value", "normalization_strategy": "key_value"},
         ))
+        # Preserve a group record and also expose safe Label: Value lines from
+        # multiline cells as separately traceable child fields.
+        for value in values:
+            for line in value.splitlines():
+                match = re.match(r"^\s*([^:=]{1,80})\s*[:=]\s*(.+?)\s*$", line)
+                if not match:
+                    continue
+                child_label, child_value = _clean(match.group(1)), _clean(match.group(2))
+                blocks.append(NormalizedBlock(
+                    text=f"{label} | {child_label} = {_safe_value(child_label, child_value)}",
+                    block_type="table_row", source_file=source_file, location=location,
+                    section=section, table_index=table_index, row_index=row_index,
+                    metadata={"table_shape": "key_value", "normalization_strategy": "key_value",
+                              "parent_field": label, "subfield": child_label},
+                ))
     return blocks
+
+
+_VERTICAL_FIELD_LABELS = re.compile(
+    r"(?i)^(?:enrichissement|enrichment|normalisation|normalization|correlation|"
+    r"database\s+lookups?|duplicate\s+udr\s+check|filtrage|filtering|"
+    r"selection|sélection)$"
+)
+
+
+def _vertical_field_value(label: str, value: str) -> bool:
+    """Accept only clear field labels paired with a concise adjacent value."""
+    clean = _clean(value)
+    return bool(_VERTICAL_FIELD_LABELS.match(_clean(label))) and bool(clean) and len(clean) <= 120 and "\n" not in clean
 
 
 def _matrix_blocks(rows: list[list[str]], source_file: str, location: str, section: str | None, table_index: int) -> list[NormalizedBlock]:
@@ -193,9 +222,32 @@ def _row_record_blocks(rows: list[list[str]], source_file: str, location: str, s
     return blocks
 
 
-def _table_blocks(table: Any, source_file: str, section: str | None, table_index: int) -> list[NormalizedBlock]:
-    rows = _table_rows(table)
+def _table_blocks(table: Any, source_file: str, section: str | None, table_index: int,
+                  logical_table: LogicalTable | None = None) -> list[NormalizedBlock]:
+    # Logical rows preserve blank coordinates and propagate only proven vertical
+    # merges.  ``row.cells`` remains a compatibility fallback for callers that
+    # pass an isolated python-docx table.
+    rows = logical_table.values() if logical_table is not None else _table_rows(table)
     location = f"Table {table_index}"
+    common_metadata = {
+        "section_path": list(logical_table.section_path) if logical_table else ([section] if section else []),
+        "logical_row_count": len(rows),
+        "logical_column_count": logical_table.logical_columns if logical_table else max((len(row) for row in rows), default=0),
+        "merged_cell_count": logical_table.metadata.get("merged_cell_count", 0) if logical_table else 0,
+        "logical_table_shape": logical_table.shape if logical_table else "",
+    }
+    # Two-level headers: the lower header row owns the destination columns;
+    # the upper merged label is retained as parent-header metadata only.
+    if len(rows) >= 3 and len(rows[0]) >= 3:
+        top_values = [value for value in rows[0][1:] if value]
+        second_headers = rows[1]
+        if top_values and len(set(value.casefold() for value in top_values)) == 1 and sum(bool(v) for v in second_headers[1:]) >= 2:
+            blocks = _row_record_blocks([second_headers, *rows[2:]], source_file, location, section, table_index)
+            for block in blocks:
+                block.metadata.update(common_metadata)
+                block.metadata["parent_header"] = top_values[0]
+                block.metadata["table_shape"] = "two_level_header_matrix"
+            return blocks
     # Wide tables with a named first row are transposed configuration matrices.
     if rows and len(rows[0]) >= 3 and (
         rows[0][0].casefold() in {"system name", "system", "destination"}
@@ -203,13 +255,19 @@ def _table_blocks(table: Any, source_file: str, section: str | None, table_index
     ):
         matrix = _matrix_blocks(rows, source_file, location, section, table_index)
         if matrix:
+            for block in matrix:
+                block.metadata.update(common_metadata)
             return matrix
     if rows and len(rows[0]) >= 3:
         records = _row_record_blocks(rows, source_file, location, section, table_index)
         if records:
+            for block in records:
+                block.metadata.update(common_metadata)
             return records
     key_values = _key_value_blocks(rows, source_file, location, section, table_index)
     if key_values:
+        for block in key_values:
+            block.metadata.update(common_metadata)
         return key_values
     raw = " | ".join(" | ".join(value for value in row if value) for row in rows if any(row))
     if not raw:
@@ -217,7 +275,7 @@ def _table_blocks(table: Any, source_file: str, section: str | None, table_index
     return [NormalizedBlock(
         text=raw, block_type="table_row", source_file=source_file, location=location,
         section=section, table_index=table_index,
-        metadata={"table_shape": "ambiguous", "normalization_strategy": "raw_fallback"},
+        metadata={"table_shape": "ambiguous", "normalization_strategy": "raw_fallback", **common_metadata},
     )]
 
 
@@ -234,28 +292,55 @@ def extract_docx_blocks(document: str | Path | bytes, source_file: str | None = 
             raise ValueError("source_file is required for byte input")
         doc = Document(BytesIO(document))
 
+    logical_tables = read_docx_structure(document)
+
     blocks: list[NormalizedBlock] = []
     section: str | None = None
     table_index = 0
     body = doc.element.body
-    for child in body.iterchildren():
+    children = list(body.iterchildren())
+    skip_vertical_ids: set[int] = set()
+    for child_index, child in enumerate(children):
+        if id(child) in skip_vertical_ids:
+            continue
         tag = child.tag.rsplit("}", 1)[-1]
         if tag == "p":
             paragraph = next((p for p in doc.paragraphs if p._p is child), None)
             if paragraph is None or not _clean(paragraph.text):
                 continue
             style = paragraph.style.name if paragraph.style else ""
-            is_heading = style.lower().startswith("heading")
+            is_heading = bool(re.search(r"(?i)heading\s*\d+", style))
             if is_heading:
                 section = _clean(paragraph.text)
+            paragraph_text = _clean(paragraph.text)
+            if child_index + 1 < len(children):
+                next_child = children[child_index + 1]
+                if next_child.tag.rsplit("}", 1)[-1] == "p":
+                    next_paragraph = next((p for p in doc.paragraphs if p._p is next_child), None)
+                    next_text = _clean(next_paragraph.text) if next_paragraph is not None else ""
+                    if _vertical_field_value(paragraph_text, next_text):
+                        if is_heading:
+                            blocks.append(NormalizedBlock(
+                                text=paragraph_text, block_type="heading", source_file=source_file,
+                                location="Corps du document", section=section,
+                            ))
+                        paragraph_text = f"{paragraph_text} = {_safe_value(paragraph_text, next_text)}"
+                        skip_vertical_ids.add(id(next_child))
+                        blocks.append(NormalizedBlock(
+                            text=paragraph_text, block_type="table_row", source_file=source_file,
+                            location="Corps du document", section=section, row_index=child_index,
+                            metadata={"table_shape": "vertical_key_value", "normalization_strategy": "key_value", "value_paragraph_index": child_index + 1},
+                        ))
+                        continue
             blocks.append(NormalizedBlock(
-                text=_clean(paragraph.text), block_type="heading" if is_heading else "paragraph",
+                text=paragraph_text, block_type="heading" if is_heading else "paragraph",
                 source_file=source_file, location="Corps du document", section=section,
             ))
         elif tag == "tbl":
             table = next((t for t in doc.tables if t._tbl is child), None)
             if table is not None:
-                blocks.extend(_table_blocks(table, source_file, section, table_index))
+                logical = logical_tables[table_index] if table_index < len(logical_tables) else None
+                blocks.extend(_table_blocks(table, source_file, section, table_index, logical))
                 table_index += 1
     return blocks
 

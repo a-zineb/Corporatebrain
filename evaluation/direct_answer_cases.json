@@ -1,0 +1,1022 @@
+[
+  {
+    "case_id": "author-1",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Who wrote the P2P specification?",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-2",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Who authored the P2P specification?",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-3",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Qui a rédigé la spécification P2P ?",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-4",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Quel est l'auteur de la spécification P2P ?",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-5",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "P2P specification author?",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-6",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Who is the P2P document author?",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-7",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Auteur du document P2P ?",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-8",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "P2P author",
+    "expected_answer": "Omar EL HIMASS",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-9",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the BI output directory?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-10",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Where does BI write its output?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-11",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Quel est le répertoire de sortie BI ?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-12",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Où sont écrits les fichiers BI ?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-13",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "BI output folder?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-14",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What directory is used by BI?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-15",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Répertoire BI ?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-16",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Where are BI files written?",
+    "expected_answer": "/data/input/mz/p2p/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-17",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "How often are files collected?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-18",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the collection frequency?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-19",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "À quelle fréquence les fichiers sont-ils collectés ?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-20",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the file collection schedule?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-21",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Collection frequency?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-22",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "When are files collected?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-23",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Fréquence de collecte ?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "frequency-24",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "File collection interval?",
+    "expected_answer": "Tous les jours à 7h",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection frequency",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-25",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "How are duplicate P2P files detected?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-26",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What checks duplicate files?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-27",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Comment les fichiers P2P dupliqués sont-ils détectés ?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-28",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the duplicate-file mechanism?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-29",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Duplicate detection method?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-30",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "How does duplicate checking work?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-31",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "Mécanisme de détection des doublons ?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "duplicatemechanism-32",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What detects P2P duplicates?",
+    "expected_answer": "CRC",
+    "expected_status": "ANSWER",
+    "relation": "duplicate mechanism",
+    "category": "duplicate checking",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-33",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Who reviewed the CRBT specification?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-34",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Who is the CRBT reviewer?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-35",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Qui a revu la spécification CRBT ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-36",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Quel est le réviseur CRBT ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-37",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "CRBT reviewer?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-38",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Who checked the CRBT document?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-39",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Revue de la spécification CRBT ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-40",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Reviewer of CRBT",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-41",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "What is the BI output directory?",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-42",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Where is the CRBT BI output directory?",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-43",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Quel est le répertoire BI de sortie ?",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-44",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Where does BI write CRBT files?",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-45",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "CRBT BI directory?",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-46",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "What path does BI use?",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-47",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "Répertoire de sortie BI CRBT ?",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-48",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "BI output path",
+    "expected_answer": "/data/input/mz/sva/crbt",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "entity-specific directory",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-49",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who authored version V1.2?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-50",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who wrote release V1.2?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-51",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Qui a rédigé la version V1.2 ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-52",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Auteur de V1.2 ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-53",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who is the author of version V1.2?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-54",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who authored release V1.2?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-55",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Auteur version V1.2",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-56",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "V1.2 author",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-57",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who wrote the IN ZSmart specification?",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-58",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who authored IN ZSmart?",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-59",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Qui a écrit la spécification IN ZSmart ?",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-60",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Auteur du document IN ZSmart ?",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-61",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "IN ZSmart specification author?",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-62",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who wrote this IN ZSmart document?",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-63",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Écrit par qui pour IN ZSmart ?",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-64",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "IN ZSmart author",
+    "expected_answer": "Ghislain AKINOCHO",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-65",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who reviewed the IN ZSmart specification?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-66",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who is the IN ZSmart reviewer?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-67",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Qui a revu la spécification IN ZSmart ?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-68",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Réviseur IN ZSmart ?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-69",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Who checked IN ZSmart?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-70",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Reviewer of the IN ZSmart document?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-71",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "Revue IN ZSmart par qui ?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "reviewer-72",
+    "document": "CISA_MZ-001-1.2 - OCM Mediation - IN ZSmart.docx",
+    "question": "IN ZSmart reviewer",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "reviewer",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-73",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Who wrote the Tango specification?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-74",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Who authored Tango?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-75",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Qui a écrit la spécification Tango ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-76",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Auteur de Tango ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-77",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Tango specification author?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-78",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Who wrote the Tango document?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-79",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Écrit par qui pour Tango ?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "author-80",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Tango author",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-81",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "What is the Tango collection directory?",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-82",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Where is the Tango directory?",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-83",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Quel est le répertoire de collecte Tango ?",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-84",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "What path does Tango use?",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-85",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Tango collection path?",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-86",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Where are Tango files collected?",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-87",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Répertoire Tango ?",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "directory-88",
+    "document": "OCM - MZ - Specification Flux Tango - v1.0.docx",
+    "question": "Tango directory",
+    "expected_answer": "/opt/cft/v3.0.1/Transfer_CFT/runtime/pub/DAILY/DONE/",
+    "expected_status": "ANSWER",
+    "relation": "directory",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p-absent-dwh-port",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the DWH port?",
+    "expected_answer": "",
+    "expected_status": "NO_EXPLICIT_EVIDENCE",
+    "relation": "port",
+    "category": "negative absent fact",
+    "source_note": "no DWH-specific port"
+  },
+  {
+    "case_id": "p2p-sensitive-password",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the administrator password?",
+    "expected_answer": "",
+    "expected_status": "SENSITIVE_REQUEST",
+    "relation": "secret",
+    "category": "security",
+    "source_note": "password request"
+  },
+  {
+    "case_id": "crbt-absent-region",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - CRBT.docx",
+    "question": "What is the deployment region?",
+    "expected_answer": "",
+    "expected_status": "NO_EXPLICIT_EVIDENCE",
+    "relation": "region",
+    "category": "negative absent fact",
+    "source_note": "absent region"
+  },
+  {
+    "case_id": "p2p-version",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the P2P specification version?",
+    "expected_answer": "1.0",
+    "expected_status": "ANSWER",
+    "relation": "version",
+    "category": "version history",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p-protocol",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What connection protocol is used?",
+    "expected_answer": "SFTP",
+    "expected_status": "ANSWER",
+    "relation": "protocol",
+    "category": "protocol",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p-port",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What port is used for P2P collection?",
+    "expected_answer": "22",
+    "expected_status": "ANSWER",
+    "relation": "port",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p-filename",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the filename pattern?",
+    "expected_answer": "p2pCommands.yyyy-mm-dd",
+    "expected_status": "ANSWER",
+    "relation": "filename",
+    "category": "filename pattern",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p-retention",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What is the retention period?",
+    "expected_answer": "30 jours",
+    "expected_status": "ANSWER",
+    "relation": "retention",
+    "category": "archive",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p-compression",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "What compression format is used?",
+    "expected_answer": "GZIP",
+    "expected_status": "ANSWER",
+    "relation": "compression",
+    "category": "archive",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p-purge",
+    "document": "CISA_MZ-001-1.0 - OCM Mediation - P2P.docx",
+    "question": "How often are archives purged?",
+    "expected_answer": "Journalière",
+    "expected_status": "ANSWER",
+    "relation": "purge frequency",
+    "category": "archive",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "simbox-cache",
+    "document": "OCM - MZ - Specification Flux SIMBOX - v1.0.docx",
+    "question": "What is the maximum SIMBOX cache age?",
+    "expected_answer": "30 jours",
+    "expected_status": "ANSWER",
+    "relation": "cache age",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "simbox-frequency",
+    "document": "OCM - MZ - Specification Flux SIMBOX - v1.0.docx",
+    "question": "How often are SIMBOX files collected?",
+    "expected_answer": "Toutes les minutes",
+    "expected_status": "ANSWER",
+    "relation": "frequency",
+    "category": "collection",
+    "source_note": "explicit structured field"
+  },
+  {
+    "case_id": "p2p11-author",
+    "document": "CISA_MZ-001-1.1 - OCM Mediation - P2P.docx",
+    "question": "Who wrote the P2P 1.1 specification?",
+    "expected_answer": "Nawfal Ennaji",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit versioned author field"
+  },
+  {
+    "case_id": "extractin-author",
+    "document": "OCM - MZ - Specification Flux Extract IN - v1.0.docx",
+    "question": "Who wrote the Extract IN specification?",
+    "expected_answer": "Nawfal ENNAJI",
+    "expected_status": "ANSWER",
+    "relation": "author",
+    "category": "metadata",
+    "source_note": "explicit author field"
+  }
+]

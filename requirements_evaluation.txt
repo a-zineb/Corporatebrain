@@ -1,0 +1,6 @@
+ragas>=0.1.7
+langchain
+langchain-community
+datasets
+pandas
+matplotlib

@@ -46,6 +46,25 @@ class StructuredDocxTests(unittest.TestCase):
         self.assertEqual([b.text for b in blocks], ["Filename Pattern = p2pCommands.yyyy-mm-dd", "Frequency = Tous les jours à 7h"])
         self.assertTrue(all(b.metadata["normalization_strategy"] == "key_value" for b in blocks))
 
+    def test_vertical_processing_fields_pair_conservatively(self):
+        path = make_doc(paragraphs=[
+            ("Enrichissement", None), ("N/A", None),
+            ("Normalisation", None), ("N/A", None),
+        ])
+        blocks = extract_docx_blocks(path, "x.docx")
+        self.assertEqual([b.text for b in blocks], ["Enrichissement = N/A", "Normalisation = N/A"])
+        self.assertTrue(all(b.metadata["table_shape"] == "vertical_key_value" for b in blocks))
+
+    def test_unrelated_single_column_rows_are_not_paired(self):
+        path = make_doc(paragraphs=[
+            ("Operational notes", None), ("N/A", None),
+            ("Enrichissement", None), ("N/A", None),
+        ])
+        blocks = extract_docx_blocks(path, "x.docx")
+        self.assertIn("Operational notes", [b.text for b in blocks])
+        self.assertNotIn("Operational notes = N/A", [b.text for b in blocks])
+        self.assertIn("Enrichissement = N/A", [b.text for b in blocks])
+
     def test_matrix_table_preserves_column_associations(self):
         path = make_doc(tables=[[("System name", "DWH", "BI"), ("Protocol", "SFTP", "SFTP"), ("Host", "172.21.75.21", "172.26.60.12"), ("username", "", "mz_user")]])
         blocks = extract_docx_blocks(path, "x.docx")

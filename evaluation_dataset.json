@@ -1,0 +1,32 @@
+[
+  {
+    "question": "Quels sont les flux OEG ?",
+    "ground_truth": "Les flux OEG incluent le trafic TCP port 443 pour l'authentification et le tunnel VPN IPSec ESP.",
+    "expected_file": "KPSA.pdf"
+  },
+  {
+    "question": "Comment configurer le KPSA ?",
+    "ground_truth": "Il faut télécharger le client VPN, l'installer, importer le certificat fourni par l'administrateur, et configurer l'adresse de la passerelle.",
+    "expected_file": "KPSA.pdf"
+  },
+  {
+    "question": "Quelles sont les URLs pour MZ ?",
+    "ground_truth": "Les URLs pour se connecter à la zone MZ sont mz.corporate.intra et admin-mz.corporate.intra.",
+    "expected_file": "MZ_Architecture.pdf"
+  },
+  {
+    "question": "Architecture du réseau OCM",
+    "ground_truth": "Le réseau OCM est segmenté en trois zones : DMZ publique, zone applicative et zone base de données sécurisée.",
+    "expected_file": "OCM_Network.pdf"
+  },
+  {
+    "question": "Quel est le nom du président d'Atos ?",
+    "ground_truth": "Je ne dispose pas de cette information dans la base documentaire fournie.",
+    "expected_file": ""
+  },
+  {
+    "question": "Je n'arrive pas à pinger le serveur OCM",
+    "ground_truth": "Le ping (ICMP) est bloqué par défaut sur le firewall OCM. Il faut utiliser telnet ou test-netconnection sur le port spécifique.",
+    "expected_file": "OCM_Network.pdf"
+  }
+]

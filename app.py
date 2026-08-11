@@ -19,6 +19,7 @@ import struct
 import unicodedata
 
 import rag_pipeline
+import canonical_rag
 from structured_ingestion import build_structured_docx_index_payload
 
 
@@ -31,6 +32,23 @@ ENABLE_STRUCTURED_DOCX_INGESTION = _env_flag("ENABLE_STRUCTURED_DOCX_INGESTION")
 STRUCTURED_INGESTION_DRY_RUN = _env_flag("STRUCTURED_INGESTION_DRY_RUN")
 ENABLE_GENERIC_STRUCTURED_DIRECT = _env_flag("ENABLE_GENERIC_STRUCTURED_DIRECT")
 ENABLE_STARTUP_SYNC = _env_flag("ENABLE_STARTUP_SYNC")
+ENABLE_CANONICAL_DEBUG = _env_flag("ENABLE_CANONICAL_DEBUG")
+DIRECT_DEBUG = _env_flag("DIRECT_DEBUG")
+DIRECT_FACT_DEBUG = _env_flag("DIRECT_FACT_DEBUG")
+
+CANONICAL_NO_EVIDENCE_FR = (
+    "Je n’ai trouvé aucune preuve explicite répondant à cette question "
+    "dans le document sélectionné."
+)
+
+
+def canonical_no_evidence_message(language):
+    if language == "English":
+        return "I found no explicit evidence answering this question in the selected document."
+    if language == "Spanish":
+        return "No encontré pruebas explícitas que respondan a esta pregunta en el documento seleccionado."
+    return CANONICAL_NO_EVIDENCE_FR
+
 
 # Fonction pour ouvrir un fichier local
 def open_local_file(path):
@@ -107,10 +125,14 @@ def is_direct_answer_suitable(query):
         "explain", "expliquer", "explique", "pourquoi", "por que", "porque", "why", "compare", "comparaison",
         "difference", "differences", "resume", "summarize", "overview", "synthese",
         "analyze", "analyse", "interpret", "interprete", "recommend", "recommand",
-        "architecture", "broad", "how does", "how do", "comment fonctionne", "whole workflow",
+        "architecture", "broad", "comment fonctionne", "whole workflow",
     )
     if any(marker in normalized for marker in unsuitable):
         return False
+    # In structured specific-document mode, interrogative how/is/does forms
+    # are factual candidates; the extractor, not this gate, decides evidence.
+    if re.match(r"^(how does|how do|how are|is|are|does|can)\b", normalized):
+        return True
     technical_attribute_markers = (
         "version", "filename pattern", "duplicate detection", "duplicate check", "duplicate files", "duplicates", "parameter",
         "configuration parameter", "input directory", "output directory", "folder", "path",
@@ -164,6 +186,18 @@ def is_direct_answer_suitable(query):
         if len(interrogatives) < 2 and not target_pair:
             return False
     return True
+
+
+def is_obvious_synthesis_query(query):
+    """Detect explicit explanation/synthesis requests before structured routing."""
+    normalized = normalize_catalog_text(query)
+    markers = (
+        "why", "pourquoi", "por que", "porque", "explain", "expliquer", "explique",
+        "summarize", "summary", "resume", "résume", "compare", "comparaison",
+        "analyze", "analyse", "interpret", "interprete", "recommend", "recommand",
+        "overview", "whole workflow", "entire workflow", "whole architecture", "entire architecture",
+    )
+    return any(marker in normalized for marker in markers)
 
 
 def direct_unsuitable_message(language):
@@ -1105,6 +1139,35 @@ bm25_index, bm25_docs, bm25_metas = build_bm25_index(collection, collection.coun
 # ==========================================
 if "last_lang" not in st.session_state:
     st.session_state.last_lang = "French"
+if "canonical_cache" not in st.session_state:
+    st.session_state.canonical_cache = canonical_rag.CanonicalSessionCache()
+if "active_document_service" not in st.session_state:
+    st.session_state.active_document_service = canonical_rag.ActiveDocumentService()
+if "fast_direct_engine" not in st.session_state:
+    st.session_state.fast_direct_engine = canonical_rag.FastDirectAnswerEngine()
+catalog_collection_count = collection.count()
+if st.session_state.get("catalog_index_count") != catalog_collection_count:
+    catalog_payload = collection.get(include=["metadatas"])
+    st.session_state.catalog_index = canonical_rag.CatalogIndex.from_metadatas(
+        catalog_payload.get("metadatas") or []
+    )
+    st.session_state.catalog_index_count = catalog_collection_count
+
+
+def fast_catalog_rows(query="", refinements=None):
+    refinements = refinements or {}
+    metadata = refinements.get("metadata", {})
+    terms = " ".join(refinements.get("terms", [])) or query
+    file_types = refinements.get("file_types", [])
+    entries = st.session_state.catalog_index.search(
+        terms,
+        application=metadata.get("application", ""),
+        geographical_entity=metadata.get("geographical_entity", ""),
+    )
+    if file_types:
+        allowed = {value.casefold() for value in file_types}
+        entries = tuple(entry for entry in entries if entry.file_type in allowed)
+    return [dict(entry.metadata) for entry in entries]
 
 with st.sidebar:
     st.header(" Configuration & Filtres")
@@ -1139,6 +1202,14 @@ with st.sidebar:
         if uploaded_files:
             for f in uploaded_files:
                 file_bytes = f.read()
+                outcome = canonical_rag.normalize_with_gate(file_bytes, f.name)
+                if outcome.document is None or outcome.status not in {"READY", "READY_WITH_WARNINGS"}:
+                    st.error(f"Document could not be reliably read: {f.name}")
+                    for warning in outcome.warnings:
+                        st.caption(warning)
+                    continue
+                uploaded_document = st.session_state.canonical_cache.get_or_normalize(file_bytes, f.name)
+                st.session_state.fast_direct_engine.prepare(uploaded_document)
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                 base_name, ext = os.path.splitext(f.name)
                 saved_filename = f"{base_name}_{timestamp_str}{ext}"
@@ -1179,7 +1250,12 @@ elif len(chroma_conditions) > 1:
 
 with st.sidebar:
     with st.expander(" Catalogue de connaissances"):
-        catalog = list_catalog_documents(collection, chroma_filter)
+        sidebar_refinements = {"metadata": {}}
+        if filter_application != "Tous":
+            sidebar_refinements["metadata"]["application"] = filter_application
+        if filter_ent != "Tous":
+            sidebar_refinements["metadata"]["geographical_entity"] = filter_ent
+        catalog = fast_catalog_rows(refinements=sidebar_refinements)
         st.caption(f"{len(catalog)} document(s) unique(s)")
         for index, metadata in enumerate(catalog):
             filename = metadata["source_file"]
@@ -1234,6 +1310,23 @@ answer_mode = st.selectbox(
     ["Knowledge catalog", "Direct answer", "AI answer"],
     key="answer_mode",
 )
+ai_scope = "current_active_document"
+if answer_mode == "AI answer":
+    ai_scope = st.selectbox(
+        "AI evidence scope",
+        ["current_active_document", "all_documents_explicit"],
+        format_func=lambda value: (
+            "Current active document" if value == "current_active_document"
+            else "All documents — explicit"
+        ),
+        key="ai_evidence_scope",
+    )
+    if ai_scope == "current_active_document":
+        active_for_ai = st.session_state.active_document_service.active
+        if active_for_ai is None:
+            st.info("Select a document in Direct answer mode before using current-document AI synthesis.")
+        else:
+            st.caption(f"AI evidence source: {active_for_ai.source_file} only")
 if "direct_answer_document_id" not in st.session_state:
     st.session_state.direct_answer_document_id = None
 direct_scope = "specific_document"
@@ -1284,6 +1377,33 @@ if answer_mode == "Direct answer":
         )
         if selected_metadata is not None:
             st.caption(f"Selected document: {selected_metadata.get('source_file', '')}")
+            selected_name = selected_metadata.get("source_file", "")
+            saved_name = selected_metadata.get("saved_as") or selected_name
+            selected_path = os.path.join(STORAGE_DIR, saved_name)
+            if os.path.isfile(selected_path):
+                with open(selected_path, "rb") as selected_file:
+                    selected_bytes = selected_file.read()
+                outcome = canonical_rag.normalize_with_gate(selected_bytes, selected_name)
+                if outcome.document is not None:
+                    cached_document = st.session_state.canonical_cache.get_or_normalize(selected_bytes, selected_name)
+                    st.session_state.fast_direct_engine.prepare(cached_document)
+                    active_context = st.session_state.active_document_service.select(cached_document)
+                    diagnostics = canonical_rag.ingestion_diagnostics(cached_document)
+                    state_label = {"READY": "Ready", "READY_WITH_WARNINGS": "Warning"}.get(
+                        diagnostics.status, "Failed"
+                    )
+                    st.caption(f"Document state: {state_label}")
+                    st.caption("Evidence source: current document only")
+                    if ENABLE_CANONICAL_DEBUG:
+                        st.json(canonical_rag.debug_snapshot(active_context))
+                else:
+                    st.session_state.active_document_service.clear()
+                    st.error("Document could not be reliably read")
+            else:
+                st.session_state.active_document_service.clear()
+                st.warning("The selected source file is unavailable for canonical normalization.")
+        else:
+            st.session_state.active_document_service.clear()
     else:
         st.warning(
             "Experimental global search may be less precise. "
@@ -1328,9 +1448,7 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
     )
     if catalog_route:
         st.session_state.catalog_refinements = catalog_refinements
-        catalog_rows = list_catalog_documents(
-            collection, chroma_filter, catalog_refinements
-        )
+        catalog_rows = fast_catalog_rows(user_query, catalog_refinements)
         catalog_lines = [
             f"- {row.get('application', 'Non classée')} / "
             f"{row.get('geographical_entity', 'Non classée')} — "
@@ -1373,6 +1491,17 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 "actual_mode": "catalog",
                 "sources_count": len(catalog_rows),
             }, ensure_ascii=False) + "\n")
+        st.stop()
+
+    if answer_mode == "AI answer" and ai_scope == "current_active_document" and st.session_state.active_document_service.active is None:
+        missing_active = "Select a document in Direct answer mode before using current-document AI synthesis."
+        with st.chat_message("assistant"):
+            st.warning(missing_active)
+        st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
+        st.session_state.messages.append({
+            "role": "assistant", "content": missing_active, "language": current_lang,
+            "actual_mode": "ai_missing_active_document", "sources": [],
+        })
         st.stop()
 
     if answer_mode == "Direct answer" and is_direct_sensitive_request(user_query):
@@ -1440,7 +1569,26 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 }, ensure_ascii=False) + "\n")
             st.stop()
 
-    if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query):
+    structured_specific_direct = (
+        answer_mode == "Direct answer"
+        and direct_scope == "specific_document"
+        and structured_specific_direct_answer_enabled()
+        and generic_structured_direct_answer_enabled()
+    )
+    # if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query):
+    if answer_mode == "Direct answer" and is_obvious_synthesis_query(user_query):
+        direct_message = direct_unsuitable_message(current_lang)
+        with st.chat_message("assistant"):
+            st.caption("Mode : direct_unsuitable")
+            st.info(direct_message)
+        st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
+        st.session_state.messages.append({
+            "role": "assistant", "content": direct_message, "language": current_lang,
+            "actual_mode": "direct_unsuitable", "answer_mode": "direct_unsuitable", "sources": [],
+        })
+        st.stop()
+
+    if answer_mode == "Direct answer" and not is_direct_answer_suitable(user_query) and not structured_specific_direct:
         direct_message = direct_unsuitable_message(current_lang)
         with st.chat_message("assistant"):
             st.caption("Mode : direct_unsuitable")
@@ -1500,13 +1648,100 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                 }, ensure_ascii=False) + "\n")
             st.stop()
 
+    # Canonical selected-document route: evidence never leaves the active hash.
+    active_canonical = st.session_state.active_document_service.active
+    if answer_mode == "Direct answer" and direct_scope == "specific_document" and active_canonical is not None:
+        canonical_trace = canonical_rag.DirectAnswerTrace((), {}, False)
+        selected_hash = str((direct_document or {}).get("file_hash") or "")
+        if selected_hash and selected_hash != active_canonical.file_hash:
+            canonical_result = canonical_rag.AnswerResult(
+                "NO_EVIDENCE", canonical_rag.NO_EXPLICIT_EVIDENCE, (),
+                active_canonical.source_file, active_canonical.file_hash,
+                "LOW", "no_evidence", "selected metadata hash mismatch",
+            )
+        else:
+            try:
+                canonical_result, canonical_trace = st.session_state.fast_direct_engine.query(
+                    active_canonical, user_query
+                )
+            except Exception:
+                canonical_result = canonical_rag.AnswerResult(
+                    "NO_EVIDENCE", canonical_rag.NO_EXPLICIT_EVIDENCE, (),
+                    active_canonical.source_file, active_canonical.file_hash,
+                    "LOW", "no_evidence", "local extractive engine unavailable",
+                )
+        answer_text = (
+            canonical_result.answer if canonical_result.status == "ANSWER"
+            else canonical_no_evidence_message(current_lang)
+        )
+        canonical_sources = [{
+            "file": active_canonical.source_file,
+            "path": os.path.abspath(os.path.join(STORAGE_DIR, (direct_document or {}).get("saved_as") or active_canonical.source_file)),
+            "loc": block.section or block.sheet or (f"Page {block.page}" if block.page else "Canonical block"),
+            "text": block.text,
+            "evidence_id": block.block_id,
+            "relaxed": False,
+        } for block in canonical_result.evidence_blocks]
+        with st.chat_message("assistant"):
+            st.caption(f"Answer method: {canonical_result.method}")
+            st.caption("Evidence source: current document only")
+            st.markdown(answer_text)
+            if canonical_sources:
+                with st.expander(direct_source_label(current_lang)):
+                    for source in canonical_sources:
+                        st.write(f"{source['file']} — {source['loc']}")
+                        st.code(source["text"])
+            if ENABLE_CANONICAL_DEBUG:
+                st.json(canonical_rag.debug_snapshot(active_canonical, canonical_result))
+            if DIRECT_DEBUG:
+                st.json({
+                    "question": user_query,
+                    "file_hash": active_canonical.file_hash,
+                    "block_count": canonical_trace.active_block_count,
+                    "candidate_count": canonical_trace.candidate_count,
+                    "top_candidates": list(canonical_trace.top_candidates),
+                    "answer_span": canonical_result.answer,
+                    "method": canonical_result.method,
+                    "latency_ms": canonical_trace.timings_ms.get("total", 0.0),
+                })
+            if DIRECT_FACT_DEBUG:
+                fact_store = st.session_state.fast_direct_engine.fact_stores.get(active_canonical.file_hash)
+                st.json({
+                    "question": user_query,
+                    "active_file_hash": active_canonical.file_hash,
+                    "parsed_query": str(canonical_rag.parse_question(user_query)),
+                    "fact_count": len(fact_store.facts) if fact_store else 0,
+                    "fact_categories": list(fact_store.categories) if fact_store else [],
+                    "final_method": canonical_result.method,
+                    "ambiguity_reason": canonical_result.reason,
+                    "latency_ms": canonical_trace.timings_ms.get("total", 0.0),
+                })
+        st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
+        st.session_state.messages.append({
+            "role": "assistant", "content": answer_text, "language": current_lang,
+            "actual_mode": canonical_result.method, "sources": canonical_sources,
+            "file_hash": active_canonical.file_hash,
+        })
+        with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
+            audit_f.write(json.dumps({
+                "timestamp": datetime.now().isoformat(), "question_originale": user_query,
+                "requested_mode": "Direct answer", "actual_mode": canonical_result.method,
+                "active_file_hash": active_canonical.file_hash,
+                "evidence_block_ids": [block.block_id for block in canonical_result.evidence_blocks],
+                "stages_attempted": list(canonical_trace.stages_attempted),
+                "timings_ms": dict(canonical_trace.timings_ms),
+                "cache_hit": canonical_trace.cache_hit,
+                "ollama_calls": 0, "chroma_calls": 0,
+            }, ensure_ascii=False) + "\n")
+        st.stop()
+
     # 1. Reformulation de la question (extractive is standalone-only and opt-in).
     extractive_route = (
         answer_mode == "Direct answer"
     )
     standalone_query = (
         user_query
-        if extractive_route
+        if extractive_route or (answer_mode == "AI answer" and ai_scope == "current_active_document")
         else contextualize_query(user_query, st.session_state.messages, selected_model)
     )
 
@@ -1533,6 +1768,14 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
         exhaustive_scan_ms = None
         evidence_selection_ms = None
         retrieval_filter = chroma_filter
+        if answer_mode == "AI answer" and ai_scope == "current_active_document":
+            active_for_ai = st.session_state.active_document_service.active
+            if active_for_ai is not None:
+                hash_filter = {"file_hash": active_for_ai.file_hash}
+                retrieval_filter = (
+                    hash_filter if not chroma_filter
+                    else {"$and": [chroma_filter, hash_filter]}
+                )
         if extractive_route and direct_scope == "specific_document" and direct_document is not None:
             retrieval_filter = build_direct_document_filter(chroma_filter, direct_document)
         if structured_exhaustive_mode:

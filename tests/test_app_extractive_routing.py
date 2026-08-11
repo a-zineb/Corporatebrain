@@ -17,6 +17,7 @@ def _load_helpers():
         "extractive_answers_enabled",
         "detect_direct_factual_intent",
         "is_direct_answer_suitable",
+        "is_obvious_synthesis_query",
         "direct_unsuitable_message",
         "is_direct_sensitive_request",
         "contains_sensitive_output",
@@ -251,6 +252,61 @@ class ExtractiveRoutingContractTests(unittest.TestCase):
         suitable = _load_helpers()["is_direct_answer_suitable"]
         for query in ("How often are files collected?", "How often are archives purged?", "A quelle frequence les fichiers sont-ils collectes ?"):
             self.assertTrue(suitable(query), query)
+
+    def test_structured_direct_accepts_factual_how_and_is_forms(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        for query in (
+            "How are duplicate files detected?",
+            "How does the source system send files to MZ?",
+            "Is enrichment performed?",
+            "Is normalization performed?",
+            "Are output files transformed?",
+            "Does the source push files to MZ?",
+        ):
+            self.assertTrue(suitable(query), query)
+
+    def test_obvious_synthesis_is_rejected_even_for_structured_direct(self):
+        helpers = _load_helpers()
+        synthesis = helpers["is_obvious_synthesis_query"]
+        suitable = helpers["is_direct_answer_suitable"]
+        for query in (
+            "Why is SFTP used?",
+            "Explain how duplicate detection works.",
+            "Explain the whole workflow.",
+            "Compare BI and DWH.",
+            "Summarize the document.",
+        ):
+            self.assertTrue(synthesis(query), query)
+            self.assertFalse(suitable(query), query)
+
+    def test_factual_grammatical_forms_are_not_synthesis(self):
+        synthesis = _load_helpers()["is_obvious_synthesis_query"]
+        for query in (
+            "How are duplicate files detected?",
+            "How does CRBT send CDR files to MZ?",
+            "Is enrichment performed?",
+            "Are output files transformed?",
+            "Does the source push files to MZ?",
+        ):
+            self.assertFalse(synthesis(query), query)
+
+    def test_synthesis_forms_remain_unsuitable(self):
+        suitable = _load_helpers()["is_direct_answer_suitable"]
+        for query in (
+            "Explain the entire workflow.",
+            "Why is SFTP used?",
+            "Compare BI and DWH architectures.",
+            "Summarize this document.",
+            "Analyze the collection architecture.",
+            "Recommend a better workflow.",
+        ):
+            self.assertFalse(suitable(query), query)
+
+    def test_structured_specific_route_does_not_stop_on_factual_syntax(self):
+        guard = APP_SOURCE[APP_SOURCE.index('structured_specific_direct ='):APP_SOURCE.index('direct_message = direct_unsuitable_message', APP_SOURCE.index('structured_specific_direct ='))]
+        self.assertIn('structured_specific_direct_answer_enabled()', guard)
+        self.assertIn('generic_structured_direct_answer_enabled()', guard)
+        self.assertIn('is_obvious_synthesis_query(user_query)', APP_SOURCE)
 
     def test_explanatory_and_comparative_variants_remain_unsuitable(self):
         suitable = _load_helpers()["is_direct_answer_suitable"]
