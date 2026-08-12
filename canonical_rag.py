@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -314,6 +314,8 @@ class AnswerResult:
     method: str
     reason: str = ""
     result_type: str = "SINGLE_VALUE"
+    query_language: str = "English"
+    suggestions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +575,7 @@ def _canonical_roles(tokens: Iterable[str]) -> set[str]:
 def parse_question(question: str) -> QuestionPlan:
     normalized = _norm(question)
     tokens = _tokens(question)
+    language_tokens = set(re.findall(r"[a-z0-9_.:/-]+", normalized))
     family = _family(tokens)
     # Requested relation outranks a qualifier such as a version identifier.
     if tokens & {"author", "authored", "auteur", "written", "wrote", "redige", "ecrit"}:
@@ -585,7 +588,17 @@ def parse_question(question: str) -> QuestionPlan:
         "used", "specification", "files", "file", "cdr", "platform", "plateforme", "planned",
         "use", "utilise", "specification", "flow", "flows", "workflow", "workflows",
     }
-    language = "French" if tokens & {"quel", "quelle", "auteur", "fichiers", "connexion", "frequence"} else "English"
+    french_markers = {
+        "quel", "quelle", "quels", "quelles", "auteur", "fichier", "fichiers",
+        "connexion", "frequence", "repertoire", "historique", "modifications",
+        "glossaire", "archivage", "trouver", "dans", "avec", "est", "sont",
+    }
+    english_markers = {
+        "what", "which", "where", "author", "file", "files", "connection",
+        "frequency", "directory", "history", "glossary", "archive", "find",
+        "with", "is", "are",
+    }
+    language = "French" if len(language_tokens & french_markers) > len(language_tokens & english_markers) else "English"
     yes_no = bool(re.match(r"(?i)^(?:does|do|is|are|can|est-ce|les?\s+.+\s+est|y a)", normalized))
     return QuestionPlan(normalized, family, frozenset(tokens), frozenset(entity_candidates),
                         frozenset(roles), language, yes_no)
@@ -1064,7 +1077,8 @@ class FastDirectAnswerEngine:
         timings["question_normalization"] = (time.perf_counter() - started) * 1000
         if _SECRET.search(question):
             result = AnswerResult("SENSITIVE_BLOCK", NO_EXPLICIT_EVIDENCE, (), context.source_file,
-                                  context.file_hash, "HIGH", "sensitive_block", "sensitive request")
+                                  context.file_hash, "HIGH", "sensitive_block", "sensitive request",
+                                  query_language=plan.language)
             timings["total"] = (time.perf_counter() - total_started) * 1000
             return result, DirectAnswerTrace(("security",), timings, False,
                                               active_block_count=len(context.block_ids))
@@ -1153,6 +1167,13 @@ class FastDirectAnswerEngine:
             result = AnswerResult("NO_EVIDENCE", NO_EXPLICIT_EVIDENCE, (), context.source_file,
                                   context.file_hash, "LOW", "no_evidence",
                                   "all local retrieval stages exhausted")
+        if result.status == "NO_EVIDENCE":
+            # Import lazily to keep the canonical engine independent at module load.
+            from mvp_services import suggestion_candidates
+            result = replace(result, suggestions=suggestion_candidates(
+                question, context.canonical_document
+            ))
+        result = replace(result, query_language=plan.language)
         timings["formatting_validation"] = 0.0
         timings["total"] = (time.perf_counter() - total_started) * 1000
         ranked_for_debug = _rank_block_indices(index, plan)

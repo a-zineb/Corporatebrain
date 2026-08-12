@@ -69,8 +69,13 @@ try {
         & $systemPython.Source -m venv (Join-Path $projectRoot "venv")
     }
     & $venvPython -m pip install --disable-pip-version-check -r $requirements
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python dependency installation failed with exit code $LASTEXITCODE."
+    }
 
     Write-Step "Checking Node.js LTS"
+    # A terminal opened before Node installation keeps an outdated PATH.
+    Refresh-ProcessPath
     $nodeCommand = Resolve-Command "node"
     $npmCommand = Resolve-Command "npm.cmd"
     if ($null -eq $nodeCommand -or $null -eq $npmCommand) {
@@ -80,14 +85,11 @@ try {
         }
         Write-Host "Node.js is missing. Installing the official LTS package..." -ForegroundColor Yellow
         & $wingetCommand.Source install --id OpenJS.NodeJS.LTS --exact --accept-package-agreements --accept-source-agreements
-        if ($LASTEXITCODE -ne 0) {
-            throw "Node.js LTS installation failed with exit code $LASTEXITCODE."
-        }
         Refresh-ProcessPath
         $nodeCommand = Resolve-Command "node"
         $npmCommand = Resolve-Command "npm.cmd"
         if ($null -eq $nodeCommand -or $null -eq $npmCommand) {
-            throw "Node.js was installed but is not visible yet. Reopen the terminal and run ./run again."
+            throw "Node.js LTS installation failed or is not visible yet (winget exit code $LASTEXITCODE). Reopen the terminal and run ./run again."
         }
     }
     Write-Host "Node: $(& $nodeCommand.Source --version)"
@@ -96,9 +98,23 @@ try {
     Write-Step "Preparing React frontend"
     $exampleEnv = Join-Path $frontendRoot ".env.example"
     $localEnv = Join-Path $frontendRoot ".env.local"
-    if (-not (Test-Path -LiteralPath $localEnv)) {
-        Copy-Item -LiteralPath $exampleEnv -Destination $localEnv
+
+    if (-not (Test-Path -LiteralPath $exampleEnv)) {
+        $nestedFrontendRoot = Join-Path $frontendRoot "frontend"
+        if ((Test-Path -LiteralPath (Join-Path $nestedFrontendRoot "package.json")) -and (Test-Path -LiteralPath (Join-Path $nestedFrontendRoot ".env.example"))) {
+            Write-Host "Detected nested frontend folder at $nestedFrontendRoot" -ForegroundColor Yellow
+            $frontendRoot = $nestedFrontendRoot
+            $exampleEnv = Join-Path $frontendRoot ".env.example"
+            $localEnv = Join-Path $frontendRoot ".env.local"
+        }
     }
+
+    if ((Test-Path -LiteralPath $localEnv) -eq $false -and (Test-Path -LiteralPath $exampleEnv)) {
+        Copy-Item -LiteralPath $exampleEnv -Destination $localEnv
+    } elseif (-not (Test-Path -LiteralPath $exampleEnv)) {
+        Write-Host "Warning: frontend .env.example not found; skipping .env.local creation." -ForegroundColor Yellow
+    }
+
     Push-Location -LiteralPath $frontendRoot
     try {
         & $npmCommand.Source install

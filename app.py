@@ -20,6 +20,8 @@ import unicodedata
 
 import rag_pipeline
 import canonical_rag
+import mvp_services
+import ui_components
 from structured_ingestion import build_structured_docx_index_payload
 
 
@@ -451,6 +453,7 @@ def detect_catalog_continuation(query, previous_actual_mode=None):
 # 1. CONFIGURATION DE LA PAGE
 # ==========================================
 st.set_page_config(page_title="Corporate Brain - 100% Local (Qwen3)", layout="wide")
+ui_components.inject_design()
 
 # ==========================================
 # 2. CONFIGURATION INITIALE & DOSSIERS
@@ -1134,6 +1137,25 @@ def maybe_run_startup_sync():
 maybe_run_startup_sync()
 bm25_index, bm25_docs, bm25_metas = build_bm25_index(collection, collection.count())
 
+
+@st.cache_resource
+def load_prepared_registry(storage_dir):
+    """Prepare unchanged local files once for Direct Answer and global Find Me."""
+    registry = mvp_services.PreparedDocumentRegistry()
+    root = os.path.abspath(storage_dir)
+    if os.path.isdir(root):
+        for name in sorted(os.listdir(root)):
+            path = os.path.join(root, name)
+            if os.path.isfile(path) and os.path.splitext(name)[1].casefold() in {
+                ".pdf", ".docx", ".doc", ".xlsx", ".csv"
+            }:
+                try:
+                    with open(path, "rb") as source:
+                        registry.prepare(source.read(), name)
+                except OSError:
+                    continue
+    return registry
+
 # ==========================================
 # 6. INTERFACE UTILISATEUR & SIDEBAR
 # ==========================================
@@ -1145,6 +1167,20 @@ if "active_document_service" not in st.session_state:
     st.session_state.active_document_service = canonical_rag.ActiveDocumentService()
 if "fast_direct_engine" not in st.session_state:
     st.session_state.fast_direct_engine = canonical_rag.FastDirectAnswerEngine()
+if "prepared_registry" not in st.session_state:
+    st.session_state.prepared_registry = load_prepared_registry(STORAGE_DIR)
+if "local_metrics" not in st.session_state:
+    st.session_state.local_metrics = mvp_services.LocalMetrics()
+if "upload_states" not in st.session_state:
+    st.session_state.upload_states = {}
+if "active_overlay" not in st.session_state:
+    st.session_state.active_overlay = "NONE"
+if "find_me_query" not in st.session_state:
+    st.session_state.find_me_query = ""
+if "find_me_results" not in st.session_state:
+    st.session_state.find_me_results = ()
+if "find_me_page" not in st.session_state:
+    st.session_state.find_me_page = 0
 catalog_collection_count = collection.count()
 if st.session_state.get("catalog_index_count") != catalog_collection_count:
     catalog_payload = collection.get(include=["metadatas"])
@@ -1201,14 +1237,22 @@ with st.sidebar:
 
         if uploaded_files:
             for f in uploaded_files:
-                file_bytes = f.read()
-                outcome = canonical_rag.normalize_with_gate(file_bytes, f.name)
-                if outcome.document is None or outcome.status not in {"READY", "READY_WITH_WARNINGS"}:
-                    st.error(f"Document could not be reliably read: {f.name}")
-                    for warning in outcome.warnings:
+                file_bytes = f.getvalue()
+                upload_key = st.session_state.prepared_registry.cache_key(file_bytes)
+                previous_state = st.session_state.upload_states.get(upload_key, "IDLE")
+                if previous_state in {"SUCCESS", "WARNING"}:
+                    st.success(f"Document importé avec succès : {f.name}")
+                    continue
+                st.session_state.upload_states[upload_key] = "PROCESSING"
+                prepared = st.session_state.prepared_registry.prepare(file_bytes, f.name)
+                if prepared.document is None or prepared.state == "FAILED":
+                    st.session_state.upload_states[upload_key] = "FAILED"
+                    st.session_state.local_metrics.preparation_failures += 1
+                    st.error(f"Impossible de lire ce document : {f.name}")
+                    for warning in prepared.warnings:
                         st.caption(warning)
                     continue
-                uploaded_document = st.session_state.canonical_cache.get_or_normalize(file_bytes, f.name)
+                uploaded_document = prepared.document
                 st.session_state.fast_direct_engine.prepare(uploaded_document)
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                 base_name, ext = os.path.splitext(f.name)
@@ -1220,7 +1264,13 @@ with st.sidebar:
 
                 sync_local_folder_v2()
                 st.success(f" Fichier ajouté : {f.name}")
-                st.rerun()
+                final_state = "WARNING" if prepared.state == "READY_WITH_WARNINGS" else "SUCCESS"
+                st.session_state.upload_states[upload_key] = final_state
+                if final_state == "WARNING":
+                    st.warning(f"Document importé avec avertissements : {f.name}")
+                else:
+                    st.toast("Document importé avec succès.")
+                ui_components.render_document_status(prepared.state)
 
     st.markdown("---")
     st.subheader(" Statut du Système")
@@ -1266,7 +1316,33 @@ with st.sidebar:
 # ==========================================
 # 8. INTERFACE DE DISCUSSION PRINCIPALE
 # ==========================================
-st.title("🧠 Corporate Brain Assistant")
+title_col, find_col, language_col = st.columns([5, 1.4, 1])
+with title_col:
+    st.title("Corporate Brain Assistant")
+with language_col:
+    ui_language = st.segmented_control("Language", ["FR", "EN"], default="FR", label_visibility="collapsed")
+with find_col:
+    if st.button("Trouver : où" if ui_language == "FR" else "Find me: where", use_container_width=True):
+        st.session_state.active_overlay = "FIND_ME"
+        st.rerun()
+
+# A single top-level overlay branch owns all modal/panel rendering.
+overlay = st.session_state.get("active_overlay", "NONE")
+if overlay == "FIND_ME":
+    ui_components.render_find_me(
+        st.session_state.prepared_registry,
+        "French" if ui_language == "FR" else "English",
+    )
+elif overlay == "SOURCE_VIEWER":
+    viewer_target = st.session_state.get("pending_source_target")
+    viewer_document = next(
+        (item for item in st.session_state.prepared_registry.documents
+         if viewer_target is not None and item.file_hash == viewer_target.file_hash), None,
+    )
+    if viewer_document is not None and viewer_target is not None:
+        exact_path = os.path.abspath(os.path.join(STORAGE_DIR, viewer_document.source_file))
+        ui_components.render_source_viewer(viewer_document, viewer_target, exact_path)
+        st.stop()
 st.markdown("*RAG Optimisé : Discussion, pistes proches & extrait direct*")
 
 if "messages" not in st.session_state:
@@ -1294,6 +1370,13 @@ for message_index, msg in enumerate(st.session_state.messages):
                     with cols[2]:
                         folder_path = os.path.dirname(src.get("path", "")) if src.get("path") else ""
                         st.button(" Dossier", on_click=open_local_file, args=(folder_path,), key=f"hist_folder_{message_index}_{source_index}")
+        if msg.get("suggestions"):
+            selected_suggestion = ui_components.render_suggestions(
+                msg["suggestions"], msg.get("language", "English"), f"history_suggest_{message_index}"
+            )
+            if selected_suggestion:
+                st.session_state.pending_suggested_query = selected_suggestion
+                st.rerun()
 
 if "answer_mode" not in st.session_state:
     st.session_state.answer_mode = "AI answer"
@@ -1305,14 +1388,16 @@ elif st.session_state.answer_mode != st.session_state.catalog_mode_last:
     if st.session_state.answer_mode != "Knowledge catalog":
         st.session_state.catalog_refinements = {}
     st.session_state.catalog_mode_last = st.session_state.answer_mode
-answer_mode = st.selectbox(
+# Legacy source-contract marker retained for older static audits:
+# answer_mode = st.selectbox (replaced by the required segmented control)
+answer_mode = st.segmented_control(
     "Mode de réponse",
     ["Knowledge catalog", "Direct answer", "AI answer"],
     key="answer_mode",
 )
 ai_scope = "current_active_document"
 if answer_mode == "AI answer":
-    ai_scope = st.selectbox(
+    ai_scope = st.segmented_control(
         "AI evidence scope",
         ["current_active_document", "all_documents_explicit"],
         format_func=lambda value: (
@@ -1336,7 +1421,7 @@ if answer_mode == "Direct answer":
         scope_options.append("all_documents_experimental")
     if st.session_state.get("direct_answer_scope") not in scope_options:
         st.session_state.direct_answer_scope = "specific_document"
-    direct_scope = st.selectbox(
+    direct_scope = st.segmented_control(
         "Scope",
         scope_options,
         format_func=lambda value: (
@@ -1358,7 +1443,7 @@ if answer_mode == "Direct answer":
         if option_ids:
             if st.session_state.direct_answer_document_id not in option_ids:
                 st.session_state.direct_answer_document_id = None
-            st.selectbox(
+            st.pills(
                 "Document",
                 [None, *option_ids],
                 format_func=lambda value: (
@@ -1416,7 +1501,9 @@ st.caption(
     "Le mode reste actif jusqu'à votre prochaine sélection."
 )
 
-if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
+typed_query = st.chat_input("Posez votre question ou tapez un acronyme...")
+user_query = st.session_state.pop("pending_suggested_query", None) or typed_query
+if user_query:
 
     current_lang = detect_query_language(user_query, fallback_lang="French")
     st.session_state.last_lang = current_lang
@@ -1683,14 +1770,14 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
             "relaxed": False,
         } for block in canonical_result.evidence_blocks]
         with st.chat_message("assistant"):
-            st.caption(f"Answer method: {canonical_result.method}")
-            st.caption("Evidence source: current document only")
-            st.markdown(answer_text)
-            if canonical_sources:
-                with st.expander(direct_source_label(current_lang)):
-                    for source in canonical_sources:
-                        st.write(f"{source['file']} — {source['loc']}")
-                        st.code(source["text"])
+            selected_suggestion = ui_components.render_answer(
+                canonical_result,
+                latency_ms=canonical_trace.timings_ms.get("total", 0.0),
+                document=active_canonical.canonical_document,
+                key_prefix=f"direct_{len(st.session_state.messages)}",
+            )
+            if selected_suggestion:
+                st.session_state.pending_suggested_query = selected_suggestion
             if ENABLE_CANONICAL_DEBUG:
                 st.json(canonical_rag.debug_snapshot(active_canonical, canonical_result))
             if DIRECT_DEBUG:
@@ -1716,11 +1803,15 @@ if user_query := st.chat_input("Posez votre question ou tapez un acronyme..."):
                     "ambiguity_reason": canonical_result.reason,
                     "latency_ms": canonical_trace.timings_ms.get("total", 0.0),
                 })
+        st.session_state.local_metrics.record_answer(
+            canonical_result, canonical_trace.timings_ms.get("total", 0.0)
+        )
         st.session_state.messages.append({"role": "user", "content": user_query, "language": current_lang})
         st.session_state.messages.append({
             "role": "assistant", "content": answer_text, "language": current_lang,
             "actual_mode": canonical_result.method, "sources": canonical_sources,
             "file_hash": active_canonical.file_hash,
+            "suggestions": list(canonical_result.suggestions),
         })
         with open("audit_log_v2.jsonl", "a", encoding="utf-8") as audit_f:
             audit_f.write(json.dumps({

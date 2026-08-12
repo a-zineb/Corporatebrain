@@ -34,7 +34,7 @@ class CorporateBrainRuntime:
     def refresh_documents(self) -> None:
         STORAGE_DIR.mkdir(parents=True, exist_ok=True)
         for path in sorted(STORAGE_DIR.iterdir()):
-            if not path.is_file() or path.suffix.casefold() not in {".pdf", ".docx", ".doc", ".xlsx", ".csv"}:
+            if not path.is_file() or path.suffix.casefold() not in {".pdf", ".docx", ".doc", ".xlsx", ".csv", ".zip"}:
                 continue
             try:
                 result = self.registry.prepare(path.read_bytes(), path.name)
@@ -52,6 +52,12 @@ class CorporateBrainRuntime:
             "blocks": len(document.blocks),
             "warnings": list(document.warnings),
         } for document in self.registry.documents]
+
+    def document_path(self, file_hash: str) -> Path:
+        path = self._paths.get(file_hash)
+        if path is None or not path.is_file() or path.parent.resolve() != STORAGE_DIR.resolve():
+            raise KeyError(file_hash)
+        return path
 
     def filters(self) -> dict[str, list[str]]:
         return {"zones": ["OCM", "OEG", "OJO", "OCI"], "applications": ["MZ", "KPSA"]}
@@ -97,6 +103,15 @@ class CorporateBrainRuntime:
         target = self.registry.source_target(file_hash, block_id)
         if target is None:
             raise KeyError((file_hash, block_id))
+        return self._source_dict(target)
+
+    def first_source(self, file_hash: str) -> dict[str, object]:
+        document = next((item for item in self.registry.documents if item.file_hash == file_hash), None)
+        if document is None or not document.blocks:
+            raise KeyError(file_hash)
+        target = self.registry.source_target(file_hash, document.blocks[0].block_id)
+        if target is None:
+            raise KeyError(file_hash)
         return self._source_dict(target)
 
     @staticmethod
@@ -176,4 +191,3 @@ class CorporateBrainRuntime:
 @lru_cache(maxsize=1)
 def get_runtime() -> CorporateBrainRuntime:
     return CorporateBrainRuntime()
-

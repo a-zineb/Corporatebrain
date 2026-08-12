@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from backend.schemas import ChatRequest, ChatResponse, SearchRequest, SourceResponse
 from backend.services.runtime import get_runtime
@@ -48,6 +49,24 @@ def delete_document(file_hash: str):
         get_runtime().delete(file_hash)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Document not found") from exc
+
+
+@app.get("/api/documents/{file_hash}/content")
+def document_content(file_hash: str, download: bool = False):
+    try:
+        path = get_runtime().document_path(file_hash)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Document not found") from exc
+    disposition = "attachment" if download else "inline"
+    return FileResponse(path, filename=path.name, content_disposition_type=disposition)
+
+
+@app.get("/api/documents/{file_hash}/source", response_model=SourceResponse)
+def document_source(file_hash: str):
+    try:
+        return get_runtime().first_source(file_hash)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Document source not found") from exc
 
 
 @app.post("/api/search")

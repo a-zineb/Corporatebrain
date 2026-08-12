@@ -47,3 +47,16 @@ secrets.toml
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
+# Frontend generated files
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+**/*.tsbuildinfo
+**/.env.local
+# Frontend/local backups
+_frontend_backup_*/
+_frontend_safety_*/
+_vite_repair_temp/
+# Temporary files
+.tmp_*/
