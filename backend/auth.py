@@ -4,7 +4,7 @@ from functools import lru_cache
 import os
 
 import jwt
-from fastapi import Header, HTTPException
+from fastapi import Header
 
 
 @lru_cache(maxsize=1)
@@ -14,18 +14,20 @@ def _jwks_client():
 
 
 def current_user_id(authorization: str | None = Header(default=None)) -> str:
-    """Verify Clerk session JWTs when Clerk is configured.
+    """Resolve Clerk identity when possible without coupling auth to RAG.
 
-    Local mode remains available for the existing offline MVP when no JWKS URL
-    is configured. The frontend clearly labels that state and does not invent a
-    profile identity.
+    Corporate Brain supports signed-out local use. Missing, invalid, expired or
+    temporarily unverifiable tokens therefore fall back to the anonymous scope;
+    they never prevent Direct Answer, Catalog, AI Answer, search or sources.
     """
     client = _jwks_client()
-    if client is None:
-        return "local-development"
+    if client is None or not authorization:
+        return "anonymous"
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authentication required")
+        return "anonymous"
     token = authorization.removeprefix("Bearer ").strip()
+    if not token or token in {"null", "undefined"}:
+        return "anonymous"
     try:
         key = client.get_signing_key_from_jwt(token)
         claims = jwt.decode(
@@ -38,5 +40,5 @@ def current_user_id(authorization: str | None = Header(default=None)) -> str:
         if allowed and claims.get("azp") not in allowed:
             raise jwt.InvalidTokenError("invalid authorized party")
         return str(claims["sub"])
-    except jwt.PyJWTError as exc:
-        raise HTTPException(status_code=401, detail="Invalid or expired session") from exc
+    except (jwt.PyJWTError, OSError):
+        return "anonymous"

@@ -206,7 +206,8 @@ For troubleshooting, start FastAPI with
 
 ### 7. Test authentication
 
-Open the frontend, create an account or sign in, open **Profile** from the
+Open the frontend. Chat, Direct Answer and AI Answer work while signed out.
+Optionally create an account or sign in, open **Profile** from the
 bottom-left card, start a document chat, verify it appears under **Recent** and
 **History**, reopen it, then sign out with Clerk's user button. A different
 Clerk account must not see the first account's conversations.
@@ -218,6 +219,10 @@ Clerk account must not see the first account's conversations.
 - **401 from FastAPI:** confirm the browser sends `Authorization: Bearer ...`,
   the JWKS URL belongs to the same Clerk instance, and `azp` is allowed.
 - **Invalid/expired session:** sign out/in and verify the system clock.
+- **“Invalid or expired session”:** restart Vite after `.env.local` changes,
+  verify the publishable key and backend JWKS belong to the same Clerk
+  application, and confirm requests can obtain a current bearer token. A stale
+  or invalid token now falls back to signed-out mode and cannot block RAG.
 - **`.env.local` not loaded:** keep it inside `frontend/` and restart Vite.
 - **Backend environment ignored:** set variables in the terminal that launches
   FastAPI (or load them through your deployment platform).

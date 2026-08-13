@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, FileText, History, MessageSquare, Network, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { UserButton, useUser } from '@clerk/react';
+import { Show, SignInButton, SignUpButton, UserButton, useUser } from '@clerk/react';
 import { api } from '../../api/corporateBrain';
 import type { ConversationSummary, Theme } from '../../types';
 
@@ -25,6 +25,6 @@ export function Sidebar({theme,setTheme}:{theme:Theme;setTheme:(t:Theme)=>void})
       {user?.imageUrl?<img className="sidebar__avatar-img" src={user.imageUrl} alt=""/>:<span className="sidebar__avatar">{user?.firstName?.slice(0,1)??'?'}</span>}
       <div><strong>{user?.fullName??'Profile'}</strong><small>{user?.primaryEmailAddress?.emailAddress}</small></div>
     </button>
-    <div className="sidebar__footer"><div className="theme-switch"><span>{isDark?'Dark':'Light'}</span><button className={`theme-switch__toggle${isDark?'':' on'}`} onClick={()=>setTheme(isDark?'light':'dark')} aria-label="Toggle theme" type="button"><span className="theme-switch__knob"/></button></div><UserButton/></div>
+    <div className="sidebar__footer"><div className="theme-switch"><span>{isDark?'Dark':'Light'}</span><button className={`theme-switch__toggle${isDark?'':' on'}`} onClick={()=>setTheme(isDark?'light':'dark')} aria-label="Toggle theme" type="button"><span className="theme-switch__knob"/></button></div><Show when="signed-in"><UserButton/></Show><Show when="signed-out"><div><SignInButton mode="modal"><button type="button" className="button">Sign in</button></SignInButton><SignUpButton mode="modal"><button type="button" className="button secondary">Sign up</button></SignUpButton></div></Show></div>
   </aside>
 }
