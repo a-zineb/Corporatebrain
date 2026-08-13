@@ -85,10 +85,11 @@ export function ChatPage() {
       .then((loaded) => {
         const raw = sessionStorage.getItem('cb-restore-chat');
         if (raw) {
-          const saved = JSON.parse(raw) as SavedChat;
+          const saved = JSON.parse(raw) as SavedChat & {document_name?:string;document_hash?:string};
           setMessages(saved.messages);
-          const restored = loaded.find((item) => item.name === saved.document);
+          const restored = loaded.find((item) => item.id === saved.document_hash || item.name === (saved.document_name ?? saved.document));
           if (restored) setDoc(restored.id);
+          setConversation(saved.id);
           sessionStorage.removeItem('cb-restore-chat');
         }
       })
@@ -160,12 +161,15 @@ export function ChatPage() {
         selectedHash,
         mode === 'ai' ? 'ai' : 'direct',
         conversation,
+        messages.map(message=>({role:message.role,content:message.text,document_hash:selectedHash??''})),
       );
       setConversation(response.conversation_id);
-      setMessages((m) => [
-        ...m,
-        { role: 'assistant', text: response.answer, response },
-      ]);
+      setMessages((m) => {
+        const next=[...m,{ role: 'assistant' as const, text: response.answer, response }];
+        const title=next.find(item=>item.role==='user')?.text.slice(0,64)??'Conversation';
+        void api.saveConversation(response.conversation_id,{title,document_hash:selectedHash,document_name:activeDocument?.name,messages:next}).then(()=>window.dispatchEvent(new CustomEvent('cb:history-updated')));
+        return next;
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Chat request failed.';
       setMessages((m) => [

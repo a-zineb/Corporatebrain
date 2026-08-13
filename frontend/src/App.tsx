@@ -4,7 +4,7 @@ import type { Theme } from './types';
 import { AppLayout } from './components/layout/AppLayout';
 import { ChatPage } from './pages/ChatPage';
 import { DocumentsPage } from './pages/DocumentsPage';
-import { SearchPage } from './pages/SearchPage';
+import { ProfilePage } from './pages/ProfilePage';
 import { SettingsPage } from './pages/SettingsPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { GraphPage } from './pages/GraphPage';
@@ -37,9 +37,9 @@ export default function App() {
           <Route element={<AppLayout theme={theme} setTheme={setTheme} />}>
             <Route path="/" element={<ChatPage />} />
             <Route path="/documents" element={<DocumentsPage />} />
-            <Route path="/search" element={<SearchPage />} />
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
             <Route
               path="/settings"
               element={<SettingsPage theme={theme} setTheme={setTheme} />}

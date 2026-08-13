@@ -41,6 +41,8 @@ Thumbs.db
 
 # Clés et secrets
 .env
+.env.*
+!.env.example
 secrets.toml
 .streamlit/secrets.toml
 .run/
@@ -54,6 +56,8 @@ frontend/.env.local
 **/.vite/
 **/*.tsbuildinfo
 **/.env.local
+**/.env.*
+!**/.env.example
 # Frontend/local backups
 _frontend_backup_*/
 _frontend_safety_*/

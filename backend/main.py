@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from backend.schemas import ChatRequest, ChatResponse, SearchRequest, SourceResponse
+from backend.auth import current_user_id
+from backend.schemas import ChatRequest, ChatResponse, ConversationSave, SearchRequest, SourceResponse
 from backend.services.runtime import get_runtime
+from backend.services.conversations import ConversationStore
+from backend.services.runtime import ROOT
+
+
+conversation_store = ConversationStore(ROOT / ".run" / "conversations.sqlite3")
 
 
 app = FastAPI(title="Corporate Brain API", version="1.0.0")
@@ -83,7 +89,7 @@ def source(file_hash: str, block_id: str):
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+def chat(request: ChatRequest, user_id: str = Depends(current_user_id)):
     try:
         if request.mode == "ai":
             return get_runtime().chat_ai(request.message, request.document_hash,
@@ -95,3 +101,23 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Corporate Brain could not process this request.") from exc
+
+
+@app.get("/api/conversations")
+def conversations(user_id: str = Depends(current_user_id)):
+    return conversation_store.list(user_id)
+
+
+@app.get("/api/conversations/{conversation_id}")
+def conversation(conversation_id: str, user_id: str = Depends(current_user_id)):
+    item = conversation_store.get(conversation_id, user_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return item
+
+
+@app.put("/api/conversations/{conversation_id}", status_code=204)
+def save_conversation(conversation_id: str, payload: ConversationSave,
+                      user_id: str = Depends(current_user_id)):
+    conversation_store.upsert(conversation_id, user_id, payload.title, payload.document_hash,
+                              payload.document_name, payload.messages)

@@ -2270,7 +2270,7 @@ button.danger {
   min-height: 140px;
   padding: 20px 24px 16px;
   border-radius: 19px;
-  background: #f8f7f9;
+  background: var(--composer-inner);
 }
 
 .ask-input-bar__input-row {
@@ -2294,7 +2294,7 @@ button.danger {
   outline: none;
   resize: none;
   background: transparent;
-  color: #f3f4f6;
+  color: var(--text);
   font-size: 16px;
   line-height: 1.5;
 }
@@ -2307,6 +2307,14 @@ button.danger {
 .ask-input-bar__field:disabled {
   opacity: 0.6;
 }
+
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); }
+.auth-screen > section { max-width: 520px; padding: 40px; text-align: center; }
+.auth-screen section > div { display: flex; gap: 12px; justify-content: center; margin-top: 24px; }
+.source-document-frame { width: 100%; min-height: 60vh; border: 1px solid var(--surface-border); border-radius: 12px; margin: 16px 0; background: var(--surface); }
+.document-scope-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 12px 10px; }
+.document-scope-filters label { display: grid; gap: 4px; color: var(--text-secondary); font-size: 12px; }
+.document-scope-filters select { min-width: 0; padding: 7px; border: 1px solid var(--surface-border); border-radius: 8px; background: var(--input-bg); color: var(--text); }
 
 .ask-input-bar__toolbar {
   display: flex;

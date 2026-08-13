@@ -19,6 +19,13 @@ class ChatRequest(BaseModel):
     filters: Filters = Field(default_factory=Filters)
 
 
+class ConversationSave(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    document_hash: str | None = None
+    document_name: str | None = None
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     limit: int = Field(default=50, ge=1, le=200)
@@ -49,4 +56,3 @@ class ChatResponse(BaseModel):
     sources: list[SourceResponse]
     suggestions: list[str] = Field(default_factory=list)
     latency_ms: float
-

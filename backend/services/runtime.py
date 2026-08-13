@@ -9,6 +9,7 @@ import uuid
 
 import canonical_rag
 import rag_pipeline
+from backend.services.ai_quality import generate_grounded
 from mvp_services import PreparedDocumentRegistry, detect_query_language
 
 
@@ -51,6 +52,10 @@ class CorporateBrainRuntime:
             "status": canonical_rag.ingestion_diagnostics(document).status,
             "blocks": len(document.blocks),
             "warnings": list(document.warnings),
+            "filiale": next((zone for zone in ("OCM", "OEG", "OJO", "OCI")
+                              if zone in document.source_file.upper()), None),
+            "application": next((app for app in ("MZ", "KPSA")
+                                  if app in document.source_file.upper()), None),
         } for document in self.registry.documents]
 
     def document_path(self, file_hash: str) -> Path:
@@ -156,33 +161,32 @@ class CorporateBrainRuntime:
     def chat_ai(self, message: str, document_hash: str | None, conversation_id: str | None,
                 history: list[dict[str, str]]) -> dict[str, object]:
         import ollama
-        collection, embedding, (bm25, docs, metadatas) = self._load_rag()
         selected = next((item for item in self.registry.documents if item.file_hash == document_hash), None)
-        where = {"file_hash": document_hash} if document_hash else None
-        search = rag_pipeline.hybrid_search(message, collection, embedding, bm25, docs, metadatas,
-                                            chroma_filter=where, top_k=5)
-        chunks, metas, relaxed_chunks, relaxed_metas, was_relaxed = search.as_legacy_tuple()
-        sources = rag_pipeline.build_source_list(chunks, metas, str(STORAGE_DIR), relaxed_flag=False)
-        sources += rag_pipeline.build_source_list(relaxed_chunks, relaxed_metas, str(STORAGE_DIR),
-                                                  relaxed_flag=True, start_id=len(sources) + 1)
-        language = detect_query_language(message)
-        prompt = rag_pipeline.build_production_prompt(
-            user_query=message, filter_ent="Tous", filter_application="Tous",
-            history=history, sources=sources, current_lang=language, was_relaxed=was_relaxed,
-        )
+        if selected is None:
+            raise ValueError("AI Answer requires a selected document.")
+
+        def generate(prompt: str) -> str:
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                format="json",
+                options={"temperature": 0.2},
+            )
+            if isinstance(response, dict):
+                return str(response.get("message", {}).get("content", ""))
+            return str(response.message.content)
+
         started = time.perf_counter()
-        generation = rag_pipeline.stream_generate(prompt.prompt, OLLAMA_MODEL, ollama,
-                                                  clarification_language=language)
-        citations = rag_pipeline.select_display_sources(generation.response, sources)
-        source_payload = [{
-            "document": item.file_name, "file_hash": document_hash or "",
-            "file_type": Path(item.file_name).suffix.lstrip("."), "block_id": str(item.source_id),
-            "location": item.location, "page": None, "sheet": None, "row": None,
-            "section": None, "text": item.text, "metadata": {"path": item.path},
-        } for item in citations.display_sources]
+        generation, evidence, language, intent = generate_grounded(
+            message, selected, history, generate,
+        )
+        source_payload = [self._source_dict(
+            self.registry.source_target(selected.file_hash, block.block_id)
+        ) for block in evidence]
         return {
-            "answer": generation.response, "status": "ANSWER", "result_type": "TOPIC_RESULT",
-            "language": language, "method": "rag_generation",
+            "answer": generation.answer, "status": "ANSWER" if evidence else "NO_EVIDENCE",
+            "result_type": intent, "language": language,
+            "method": "canonical_grounded_generation_repair" if generation.repaired else "canonical_grounded_generation",
             "conversation_id": conversation_id or str(uuid.uuid4()), "sources": source_payload,
             "suggestions": [], "latency_ms": round((time.perf_counter() - started) * 1000, 3),
         }

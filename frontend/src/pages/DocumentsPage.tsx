@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Grid3x3,
   LayoutList,
-  Sparkles,
 } from 'lucide-react';
 import { api } from '../api/corporateBrain';
 import type { DocumentItem } from '../types';
@@ -14,7 +13,6 @@ import { SkeletonList } from '../components/ui/Skeleton';
 import { useToast } from '../hooks/useToast';
 import {
   maxFileSizeMb,
-  sampleDocuments,
   supportedFormats,
 } from '../data/mockData';
 
@@ -31,7 +29,6 @@ type SortBy = 'date' | 'size' | 'alpha';
 export function DocumentsPage() {
   const { showError, showSuccess } = useToast();
   const [items, setItems] = useState<DocumentItem[]>([]);
-  const [mockSamples, setMockSamples] = useState<DocumentItem[]>([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [bannerError, setBannerError] = useState('');
@@ -39,10 +36,7 @@ export function DocumentsPage() {
   const [typeFilter, setTypeFilter] = useState<FileTypeCategory>('all');
   const [sortBy, setSortBy] = useState<SortBy>('date');
 
-  const allItems = useMemo(
-    () => [...items, ...mockSamples],
-    [items, mockSamples],
-  );
+  const allItems = items;
 
   const filtered = useMemo(() => {
     let list = filterByFileType(allItems, typeFilter).filter((i) =>
@@ -88,15 +82,6 @@ export function DocumentsPage() {
   }
 
   async function remove(id: string) {
-    if (id.startsWith('sample-')) {
-      setMockSamples((prev) => {
-        const next = prev.filter((i) => i.id !== id);
-        sessionStorage.setItem('cb-mock-samples', JSON.stringify(next));
-        window.dispatchEvent(new CustomEvent('cb:samples-updated'));
-        return next;
-      });
-      return;
-    }
     if (!confirm('Delete this document?')) return;
     try {
       await api.remove(id);
@@ -104,13 +89,6 @@ export function DocumentsPage() {
     } catch (e) {
       showError(e instanceof Error ? e.message : 'Delete failed.');
     }
-  }
-
-  function loadSamples() {
-    setMockSamples(sampleDocuments);
-    sessionStorage.setItem('cb-mock-samples', JSON.stringify(sampleDocuments));
-    window.dispatchEvent(new CustomEvent('cb:samples-updated'));
-    showSuccess('Sample docs loaded', '3 demo documents added for testing.');
   }
 
   const typeCounts = useMemo(() => countByFileType(allItems), [allItems]);
@@ -201,22 +179,6 @@ export function DocumentsPage() {
               <DocumentCard key={i.id} item={i} onDelete={remove} />
             ))}
           </div>
-        )}
-
-        {allItems.length === 0 && !loading && (
-          <SurfaceCard className="sample-docs-card">
-            <Sparkles size={20} />
-            <div>
-              <strong>Load Sample Docs</strong>
-              <p>
-                Don&apos;t have files ready? Load 3 sample tech docs to test
-                search and chat.
-              </p>
-            </div>
-            <button type="button" className="button" onClick={loadSamples}>
-              Load samples
-            </button>
-          </SurfaceCard>
         )}
 
         <footer className="format-badges">

@@ -3,7 +3,6 @@ import {
   History,
   LayoutGrid,
   MessageSquarePlus,
-  Search,
   Settings,
 } from 'lucide-react';
 import { NavLink, useNavigate } from 'react-router-dom';
@@ -49,15 +48,6 @@ export function IconRail() {
           title="Documents"
         >
           <FileText size={20} />
-        </NavLink>
-        <NavLink
-          to="/search"
-          className={({ isActive }) =>
-            `icon-rail__btn${isActive ? ' active' : ''}`
-          }
-          title="Search"
-        >
-          <Search size={20} />
         </NavLink>
         <NavLink
           to="/history"

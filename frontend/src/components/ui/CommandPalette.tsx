@@ -3,8 +3,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   commandPaletteItems,
-  getRecentChats,
-  suggestedSearches,
 } from '../../data/mockData';
 
 type PaletteItem = {
@@ -33,20 +31,7 @@ export function CommandPalette({
   const [query, setQuery] = useState('');
 
   const items = useMemo(() => {
-    const recent = getRecentChats(8).map((c) => ({
-      id: `chat-${c.id}`,
-      label: c.title,
-      group: 'Recent Chats',
-      path: '/',
-      subtitle: c.document,
-    }));
-    const searches = suggestedSearches.map((s, i) => ({
-      id: `search-${i}`,
-      label: s,
-      group: 'Suggested Searches',
-      path: `/search?q=${encodeURIComponent(s)}`,
-    }));
-    return [...commandPaletteItems, ...recent, ...searches] as PaletteItem[];
+    return commandPaletteItems.filter(item=>item.path!=='/search') as PaletteItem[];
   }, [open]);
 
   const filtered = items.filter(
