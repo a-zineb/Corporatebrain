@@ -89,7 +89,7 @@ class AppPipelineIntegrationTests(unittest.TestCase):
 
         baseline_rewrite = top_level_function("contextualize_query", {"ollama": DeterministicOllama()})
         integrated_rewrite = current_top_level_function(
-            "contextualize_query", {"ollama": DeterministicOllama(), "rag_pipeline": rag_pipeline}
+            "contextualize_query", {"generation_provider": DeterministicOllama(), "rag_pipeline": rag_pipeline}
         )
         history = [{"role": "assistant", "content": "OCM is change management."}]
         self.assertEqual(

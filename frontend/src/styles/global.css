@@ -1991,7 +1991,24 @@ button.danger {
 .graph-container {
   position: relative;
   margin-top: 12px;
+  min-width: 0;
 }
+.graph-shell:fullscreen { background:var(--background);padding:18px;overflow:auto; }
+.graph-workspace { display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:14px; }
+.graph-filters { display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 12px; }
+.graph-filters label { display:flex;align-items:center;gap:6px;flex:1;min-width:220px;border:1px solid var(--surface-border);padding:7px 10px;border-radius:9px; }
+.graph-filters input { border:0;background:transparent;color:var(--text-primary);width:100%;outline:0; }
+.graph-filters button,.graph-filters select,.graph-controls button,.graph-details button { border:1px solid var(--surface-border);background:var(--surface);color:var(--text-primary);padding:7px 9px;border-radius:8px; }
+.graph-filters button.active { background:var(--accent);color:white; }
+.graph-controls { position:absolute;z-index:2;top:10px;left:10px;display:flex;gap:5px; }
+.graph-controls button { width:34px;height:34px;display:grid;place-items:center; }
+.graph-controls svg { width:15px; }
+.graph-details { border:1px solid var(--surface-border);border-radius:12px;padding:14px;display:flex;flex-direction:column;align-items:stretch;gap:9px;min-height:520px;overflow:auto; }
+.graph-details h3,.graph-details h4,.graph-details p { margin:0; }
+.graph-details button { text-align:left;overflow-wrap:anywhere; }
+.graph-legend { display:grid;gap:7px; }
+.graph-legend span { display:flex;align-items:center;gap:7px;font-size:12px; }
+.graph-legend i { width:11px;height:11px;border-radius:50%; }
 
 .graph-toolbar {
   display: flex;
@@ -2009,7 +2026,7 @@ button.danger {
 
 .graph-canvas {
   width: 100%;
-  height: min(520px, 60vh);
+  height: min(620px, 72vh);
   border-radius: var(--radius-lg);
   border: 1px solid var(--surface-border);
   background: var(--muted-surface);
@@ -2021,12 +2038,19 @@ button.danger {
   stroke: var(--accent);
   opacity: 0.35;
 }
+.graph-edge { cursor:pointer;transition:opacity .15s; }
+.graph-edge:hover { opacity:1!important; }
+.graph-edge--dim { opacity:.05!important; }
 
 .graph-node__circle {
   fill: var(--surface);
   stroke: var(--accent);
   stroke-width: 2;
 }
+.graph-node { transition:opacity .15s;outline:none; }
+.graph-node--dim { opacity:.16; }
+.graph-node:focus circle { stroke:#fff;stroke-width:4; }
+.graph-node__type { font-size:8px;font-weight:800;fill:white;pointer-events:none; }
 
 .graph-node--focus .graph-node__circle {
   fill: var(--accent-soft);
@@ -2034,10 +2058,12 @@ button.danger {
 }
 
 .graph-node__label {
-  font-size: 10px;
+  font-size: 9px;
+  font-weight:600;
   fill: var(--text-secondary);
   pointer-events: none;
 }
+@media(max-width:900px){.graph-workspace{grid-template-columns:1fr}.graph-details{min-height:auto}.graph-canvas{height:520px}}
 
 .graph-tooltip {
   position: absolute;
@@ -2083,6 +2109,20 @@ button.danger {
   color: var(--accent);
   text-decoration: underline;
 }
+
+.table-viewer { margin: 14px 0; border: 1px solid var(--surface-border); border-radius: 10px; overflow: hidden; }
+.table-viewer__meta { padding: 8px 10px; color: var(--text-secondary); background: var(--muted-surface); font-size: 12px; }
+.table-viewer__scroll { overflow: auto; max-height: 340px; }
+.table-viewer table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
+.table-viewer th,.table-viewer td { padding: 7px 9px; border: 1px solid var(--surface-border); white-space: pre-wrap; vertical-align: top; }
+.table-viewer th { position: sticky; left: 0; background: var(--muted-surface); color: var(--text-muted); }
+.table-viewer__selected { background: color-mix(in srgb,var(--accent) 28%,transparent); outline: 1px solid var(--accent); }
+.table-viewer__loading { color: var(--text-muted); }
+.ingestion-progress { display:grid; gap:8px; margin:12px 0; padding:12px; border:1px solid var(--surface-border); border-radius:12px; }
+.ingestion-progress>header,.ingestion-job { display:flex; align-items:center; gap:10px; }
+.ingestion-progress>header { justify-content:space-between; }
+.ingestion-job>div { display:flex; flex-direction:column; min-width:180px; flex:1; }
+.ingestion-job progress { width:min(260px,35vw); accent-color:var(--accent); }
 
 /* ── Profile modal ── */
 .modal-overlay {

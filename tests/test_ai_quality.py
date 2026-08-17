@@ -20,6 +20,7 @@ def csv_document() -> CanonicalDocument:
 
 def test_intent_distinguishes_exhaustive_and_follow_up():
     assert classify_intent("Give me all systems") == "EXHAUSTIVE_LIST"
+    assert classify_intent("Give me the EKYC test cases") == "EXHAUSTIVE_LIST"
     assert classify_intent("and its directory?") == "FOLLOW_UP"
 
 

@@ -3,7 +3,8 @@ import type { DocumentItem } from '../types';
 export type FileTypeCategory = 'all' | 'pdf' | 'word' | 'csv' | 'other';
 
 const STOP = new Set([
-  'the', 'and', 'for', 'pdf', 'doc', 'docx', 'file', 'document',
+  'the','and','for','les','des','avec','pdf','doc','docx','file','fichier','document',
+  'version','specification','project','projet','system','systeme','rapport','final','technique',
 ]);
 
 export function categorizeFileType(type: string): Exclude<FileTypeCategory, 'all'> {
@@ -75,47 +76,45 @@ export interface GraphNode {
   y: number;
   vx: number;
   vy: number;
+  radius: number;
+  document: DocumentItem;
 }
 
 export interface GraphEdge {
   source: string;
   target: string;
   weight: number;
+  reasons: string[];
 }
 
-const KEYWORD_MIN = 5;
+export const GRAPH_SIMILARITY_MIN = 0.18;
+export const GRAPH_MAX_EDGES_PER_NODE = 3;
 
 export function buildDocumentGraph(documents: DocumentItem[]): {
   nodes: GraphNode[];
   edges: GraphEdge[];
 } {
-  const extras: Record<string, string[]> = {
-    'sample-1': ['financial', 'results', 'quarter', 'revenue', 'report', 'annual'],
-    'sample-2': ['security', 'compliance', 'policy', 'access', 'control', 'audit'],
-    'sample-3': ['authentication', 'api', 'endpoint', 'security', 'token', 'oauth'],
-  };
-
   const keywordMap = new Map<string, Set<string>>();
   documents.forEach((doc) => {
-    keywordMap.set(doc.id, extractKeywords(doc, extras[doc.id] ?? []));
+    keywordMap.set(doc.id, extractKeywords(doc,[doc.filiale??'',doc.application??''].filter(Boolean)));
   });
 
-  const edges: GraphEdge[] = [];
+  const candidates: GraphEdge[] = [];
   for (let i = 0; i < documents.length; i++) {
     for (let j = i + 1; j < documents.length; j++) {
       const a = documents[i];
       const b = documents[j];
       const ka = keywordMap.get(a.id)!;
       const kb = keywordMap.get(b.id)!;
-      let shared = 0;
-      ka.forEach((k) => {
-        if (kb.has(k)) shared += 1;
-      });
-      if (shared >= KEYWORD_MIN) {
-        edges.push({ source: a.id, target: b.id, weight: shared });
-      }
+      const reasons=[...ka].filter(k=>kb.has(k));
+      const union=new Set([...ka,...kb]).size;
+      const score=union?reasons.length/union:0;
+      if(score>=GRAPH_SIMILARITY_MIN&&reasons.length)candidates.push({source:a.id,target:b.id,weight:score,reasons:reasons.slice(0,6)});
     }
   }
+  candidates.sort((a,b)=>b.weight-a.weight);
+  const degree=new Map<string,number>();
+  const edges=candidates.filter(edge=>{const a=degree.get(edge.source)??0,b=degree.get(edge.target)??0;if(a>=GRAPH_MAX_EDGES_PER_NODE||b>=GRAPH_MAX_EDGES_PER_NODE)return false;degree.set(edge.source,a+1);degree.set(edge.target,b+1);return true});
 
   const connectionCount = new Map<string, number>();
   documents.forEach((d) => connectionCount.set(d.id, 0));
@@ -126,7 +125,8 @@ export function buildDocumentGraph(documents: DocumentItem[]): {
 
   const nodes: GraphNode[] = documents.map((doc, i) => {
     const angle = (i / Math.max(documents.length, 1)) * Math.PI * 2;
-    const r = 120 + connectionCount.get(doc.id)! * 18;
+    const r = 150 + Math.min(connectionCount.get(doc.id)!,4) * 12;
+    const radius=Math.max(18,Math.min(46,22+Math.sqrt(Math.max(doc.blocks,1))*0.8));
     return {
       id: doc.id,
       label: doc.name,
@@ -136,6 +136,8 @@ export function buildDocumentGraph(documents: DocumentItem[]): {
       y: 300 + Math.sin(angle) * r,
       vx: 0,
       vy: 0,
+      radius,
+      document:doc,
     };
   });
 
@@ -158,7 +160,8 @@ export function simulateGraph(
         const dx = sim[j].x - sim[i].x;
         const dy = sim[j].y - sim[i].y;
         const dist = Math.max(Math.hypot(dx, dy), 1);
-        const force = 8000 / (dist * dist);
+        const minimum=sim[i].radius+sim[j].radius+42;
+        const force = dist<minimum?(minimum-dist)*0.32:9000/(dist*dist);
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         sim[i].vx -= fx;
@@ -173,7 +176,7 @@ export function simulateGraph(
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const dist = Math.max(Math.hypot(dx, dy), 1);
-      const force = dist * 0.02;
+      const force = (dist-145) * 0.018;
       const fx = (dx / dist) * force;
       const fy = (dy / dist) * force;
       a.vx += fx;
@@ -188,8 +191,8 @@ export function simulateGraph(
       n.vy *= 0.85;
       n.x += n.vx;
       n.y += n.vy;
-      n.x = Math.max(40, Math.min(width - 40, n.x));
-      n.y = Math.max(40, Math.min(height - 40, n.y));
+      n.x = Math.max(n.radius+70, Math.min(width-n.radius-70,n.x));
+      n.y = Math.max(n.radius+25, Math.min(height-n.radius-45,n.y));
     });
   }
   return sim;
@@ -211,4 +214,15 @@ export function filterGraphToFocus(
       (e) => linked.has(e.source) && linked.has(e.target),
     ),
   };
+}
+
+export function fuzzyDocumentMatch(document:DocumentItem,query:string){
+  const normalized=(value:string)=>value.toLocaleLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'').replace(/[^a-z0-9]+/g,' ');
+  const target=normalized(document.name),needle=normalized(query).trim();
+  if(!needle||target.includes(needle))return true;
+  return needle.split(' ').every(token=>target.split(' ').some(word=>{
+    if(word.startsWith(token)||token.startsWith(word))return true;
+    if(Math.abs(word.length-token.length)>2)return false;
+    let differences=0,i=0,j=0;while(i<word.length&&j<token.length){if(word[i]===token[j]){i++;j++}else{differences++;if(word.length>token.length)i++;else if(token.length>word.length)j++;else{i++;j++}}}return differences+(word.length-i)+(token.length-j)<=2;
+  }));
 }

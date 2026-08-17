@@ -130,7 +130,7 @@ class RuntimeParityTests(unittest.TestCase):
             clock=clock_from([4.0, 4.2]),
         )
         self.assertEqual(fallback.query, "Question")
-        self.assertEqual(errors, ["Ollama Error in contextualize_query: offline"])
+        self.assertEqual(errors, ["Generation provider error in contextualize_query: offline"])
 
     def test_generation_request_output_callbacks_errors_and_latency_match_baseline_contract(self):
         baseline_call = baseline_stream_call()

@@ -38,7 +38,8 @@ def classify_intent(query: str) -> str:
     q = _norm(query)
     if re.search(r"\b(and|et|also|aussi|its?|son|sa|ses|leur|what about|et pour)\b", q) and len(q.split()) <= 8:
         return "FOLLOW_UP"
-    if re.search(r"\b(all|every|everything|complete|entire|tous|toutes|tout|chaque|liste|list)\b", q):
+    if (re.search(r"\b(all|every|everything|complete|entire|tous|toutes|tout|chaque|liste|list)\b", q)
+            or re.search(r"\b(test cases?|cas de tests?|cas de test)\b", q)):
         return "EXHAUSTIVE_LIST"
     if any(word in q for word in ("sheet", "feuille", "onglet", "table", "row", "ligne")):
         return "TABLE_QUERY"
@@ -116,7 +117,7 @@ def retrieve_evidence(document: CanonicalDocument, query: str, intent: str) -> l
             or (block.section and _norm(block.section) in section_names)
             or (block.table_index is not None and block.table_index in table_ids)
         )]
-        return saturated[:200]
+        return saturated[:500]
     return [block for _, _, block in relevant[:12]]
 
 
@@ -158,6 +159,26 @@ Question: {query}
 
 Evidence:
 {evidence_catalog(blocks)}"""
+
+
+def build_conversational_prompt(query: str, language: str, intent: str,
+                                blocks: list[CanonicalBlock], history: list[dict[str, str]]) -> str:
+    recent = [item for item in history[-6:] if item.get("content", "").strip()]
+    context = "\n".join(f"{item.get('role', 'user')}: {item['content'][:600]}" for item in recent)
+    completeness = ("Present every supplied relevant record." if intent == "EXHAUSTIVE_LIST"
+                    else "Match the level of detail to the question.")
+    return f"""Current question: {query}
+Answer language: {language}
+Intent: {intent}
+{completeness}
+
+Recent conversation (for resolving references only):
+{context or '(none)'}
+
+Verified evidence from the uploaded corpus:
+{evidence_catalog(blocks)}
+
+Write only the conversational Markdown answer. Do not output JSON, evidence IDs, or source labels."""
 
 
 @dataclass(frozen=True)

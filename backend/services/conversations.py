@@ -52,3 +52,17 @@ class ConversationStore:
             return None
         return {"id": row[0], "title": row[1], "document_hash": row[2], "document_name": row[3],
                 "messages": json.loads(row[4]), "created_at": row[5], "updated_at": row[6]}
+
+    def delete(self, conversation_id: str, user_id: str) -> bool:
+        with self.lock, self._connect() as db:
+            cursor = db.execute("DELETE FROM conversations WHERE id=? AND user_id=?",
+                                (conversation_id, user_id))
+        return cursor.rowcount > 0
+
+    def rename(self, conversation_id: str, user_id: str, title: str) -> bool:
+        with self.lock, self._connect() as db:
+            cursor = db.execute(
+                "UPDATE conversations SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+                (title, conversation_id, user_id),
+            )
+        return cursor.rowcount > 0

@@ -30,7 +30,7 @@ class RAGPipelineContractTests(unittest.TestCase):
         self.assertEqual(config.chroma_path, "chroma_db_local_v2")
         self.assertEqual(config.collection_name, "documents")
         self.assertEqual(config.embedding_model_name, "paraphrase-multilingual-MiniLM-L12-v2")
-        self.assertEqual(config.llm_model_name, "qwen3:8b")
+        self.assertEqual(config.llm_model_name, "gemini-3.6-flash")
         self.assertEqual(config.vector_candidate_count, 10)
         self.assertEqual(config.bm25_candidate_count, 10)
         self.assertEqual(config.rrf_k, 60)

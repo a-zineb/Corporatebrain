@@ -252,7 +252,7 @@ export function ChatPage() {
                   <p className="welcome__mode">
                     Active mode:{' '}
                     <strong>
-                      {mode === 'ai' ? 'AI Answer' : 'Catalog'}
+                      {mode === 'ai' ? 'AI Answer · All documents' : 'Catalog · All documents'}
                     </strong>
                   </p>
                 )}

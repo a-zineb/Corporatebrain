@@ -604,6 +604,50 @@ def parse_question(question: str) -> QuestionPlan:
                         frozenset(roles), language, yes_no)
 
 
+def _natural_section_intent(question: str) -> str | None:
+    normalized = _norm(question)
+    patterns = {
+        "abstract": (
+            r"\babstract\b", r"\babstrait\b", r"\bresume\b",
+            r"what(?:'s| is) (?:this|the) (?:document|file|project) about",
+            r"de quoi parle (?:ce|le) (?:document|fichier|projet)",
+        ),
+        "requirements": (
+            r"\brequirements?\b", r"\bexigences?\b", r"\brequis\b",
+        ),
+        "purpose": (
+            r"\bpurpose\b", r"\bobjective\b", r"\bobjectif\b", r"\bbut du document\b",
+        ),
+        "references": (
+            r"\breferences?\b", r"documents? de reference", r"documents? references?",
+        ),
+    }
+    for intent, expressions in patterns.items():
+        if any(re.search(expression, normalized) for expression in expressions):
+            return intent
+    return None
+
+
+def _section_answer(context: ActiveDocumentContext, intent: str) -> AnswerResult | None:
+    aliases = {
+        "abstract": {"abstract", "abstrait", "resume", "summary", "overview"},
+        "requirements": {"requirement", "requirements", "exigence", "exigences", "requis"},
+        "purpose": {"purpose", "objective", "objectif", "scope", "portee"},
+        "references": {"reference", "references", "document de reference", "documents de reference"},
+    }[intent]
+    matches = [block for block in context.canonical_document.blocks
+               if any(alias in _norm(" ".join(filter(None, (block.section, block.text[:120]))))
+                      for alias in aliases)]
+    if not matches:
+        return None
+    # A heading identifies the section but is not a useful answer by itself.
+    evidence = [block for block in matches if block.block_type != "heading"] or matches
+    evidence = evidence[:20 if intent == "requirements" else 8]
+    answer = "\n".join(block.text for block in evidence)
+    return AnswerResult("ANSWER", answer, tuple(evidence), context.source_file, context.file_hash,
+                        "HIGH", f"natural_{intent}_section", result_type=intent.upper())
+
+
 def _occurrence_score(occurrence: FieldOccurrence, plan: QuestionPlan) -> float:
     block_tokens = _tokens(occurrence.block.text)
     relation_tokens = _tokens(occurrence.local_context) if occurrence.local_context else block_tokens
@@ -1087,7 +1131,10 @@ class FastDirectAnswerEngine:
         timings["index_resolution"] = (time.perf_counter() - started) * 1000
         stages.append("exact_structured_lookup")
         started = time.perf_counter()
-        result = _structured_index_answer(context, index, plan)
+        section_intent = _natural_section_intent(question)
+        result = _section_answer(context, section_intent) if section_intent else None
+        if result is None:
+            result = _structured_index_answer(context, index, plan)
         timings["structured_lookup"] = (time.perf_counter() - started) * 1000
         if result is None:
             stages.extend(("same_record_relational", "exhaustive_lexical_scan", "bm25"))

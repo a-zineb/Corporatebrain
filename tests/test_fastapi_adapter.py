@@ -77,27 +77,38 @@ def test_missing_token_can_use_history_in_anonymous_scope():
     assert loaded.status_code == 200 and loaded.json()["title"] == "Anonymous chat"
 
 
+def test_conversation_can_be_deleted_in_its_user_scope():
+    conversation_id = "anonymous-delete-regression-test"
+    assert client.put(f"/api/conversations/{conversation_id}", json={
+        "title": "Delete me", "messages": [],
+    }).status_code == 204
+    assert client.delete(f"/api/conversations/{conversation_id}").status_code == 204
+    assert client.get(f"/api/conversations/{conversation_id}").status_code == 404
+
+
+def test_conversation_can_be_renamed_without_replacing_messages():
+    conversation_id = "anonymous-rename-regression-test"
+    payload = {"title": "Old title", "messages": [{"role": "user", "text": "hello"}]}
+    assert client.put(f"/api/conversations/{conversation_id}", json=payload).status_code == 204
+    assert client.patch(f"/api/conversations/{conversation_id}", json={"title": "New title"}).status_code == 204
+    loaded = client.get(f"/api/conversations/{conversation_id}")
+    assert loaded.status_code == 200
+    assert loaded.json()["title"] == "New title"
+    assert loaded.json()["messages"] == payload["messages"]
+
+
 def test_invalid_token_still_reaches_grounded_ai_generation(monkeypatch):
-    import json
-    import re
-    import sys
-    from types import SimpleNamespace
     import backend.auth
 
     class BrokenJwks:
         def get_signing_key_from_jwt(self, token):
             raise __import__("jwt").InvalidTokenError("synthetic invalid token")
 
-    def chat(**kwargs):
-        prompt = kwargs["messages"][0]["content"]
-        evidence_id = re.search(r'<evidence id="([^"]+)"', prompt).group(1)
-        return {"message": {"content": json.dumps({
-            "answer": "Grounded AI response.",
-            "claims": [{"text": "Grounded response", "evidence_ids": [evidence_id]}],
-        })}}
+    def generate(prompt):
+        return "Grounded AI response."
 
     monkeypatch.setattr(backend.auth, "_jwks_client", lambda: BrokenJwks())
-    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(chat=chat))
+    monkeypatch.setattr(get_runtime().generation_provider, "generate", generate)
     documents = get_runtime().documents()
     if not documents:
         return

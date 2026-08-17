@@ -4,7 +4,7 @@ import {
   LayoutList,
 } from 'lucide-react';
 import { api } from '../api/corporateBrain';
-import type { DocumentItem } from '../types';
+import type { DocumentItem, IngestionJob } from '../types';
 import { DocumentCard } from '../components/documents/DocumentCard';
 import { DragDropZone } from '../components/ui/DragDropZone';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
@@ -35,6 +35,7 @@ export function DocumentsPage() {
   const [view, setView] = useState<ViewMode>('grid');
   const [typeFilter, setTypeFilter] = useState<FileTypeCategory>('all');
   const [sortBy, setSortBy] = useState<SortBy>('date');
+  const [jobs,setJobs]=useState<IngestionJob[]>([]);
 
   const allItems = items;
 
@@ -68,18 +69,23 @@ export function DocumentsPage() {
     void load();
   }, []);
 
+  useEffect(()=>{const poll=()=>api.ingestionJobs().then(next=>{setJobs(next);if(next.some(job=>job.status==='complete'))void load()}).catch(()=>undefined);void poll();const timer=setInterval(poll,1000);return()=>clearInterval(timer)},[]);
+
   async function upload(file?: File) {
     if (!file) return;
     try {
-      await api.upload(file);
-      showSuccess('Document uploaded', file.name);
-      void load();
+      await api.uploadAsync(file);
+      showSuccess('Upload received', `${file.name} is processing in the background.`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Upload failed.';
       setBannerError(msg);
       showError(msg);
     }
   }
+
+  async function reindex(id:string){try{await api.reindex(id);showSuccess('Document re-indexed','Old chunks were replaced for this document only.');void load()}catch(e){showError(e instanceof Error?e.message:'Re-index failed.')}}
+
+  async function retry(id:string){try{await api.retryIngestion(id)}catch(e){showError(e instanceof Error?e.message:'Retry failed.')}}
 
   async function remove(id: string) {
     if (!confirm('Delete this document?')) return;
@@ -171,12 +177,14 @@ export function DocumentsPage() {
           />
         )}
 
+        {jobs.length>0&&<section className="ingestion-progress" aria-label="Ingestion progress"><header><strong>Processing files</strong><span>{jobs.filter(job=>job.status==='complete').length}/{jobs.length} complete</span></header>{jobs.map(job=><div key={job.id} className={`ingestion-job ingestion-job--${job.status}`}><div><strong>{job.name}</strong><small>{job.stage}{job.units_total?` · ${job.units_completed}/${job.units_total}`:''}</small></div><progress max={job.total_stages} value={job.completed_stages}/>{job.status==='failed'&&<><span className="error">{job.error}</span><button onClick={()=>void retry(job.id)}>Retry</button></>}</div>)}</section>}
+
         {loading ? (
           <SkeletonList count={4} />
         ) : (
           <div className={`document-list document-list--${view}`}>
             {filtered.map((i) => (
-              <DocumentCard key={i.id} item={i} onDelete={remove} />
+              <DocumentCard key={i.id} item={i} onDelete={remove} onReindex={reindex} />
             ))}
           </div>
         )}

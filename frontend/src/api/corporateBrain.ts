@@ -1,15 +1,24 @@
-import {API_BASE,request} from './client'; import type {ChatResponse,ConversationSummary,DocumentItem,SavedConversation,SearchResult,Source} from '../types';
+import {API_BASE,request} from './client'; import type {ChatResponse,ConversationSummary,DocumentItem,HealthStatus,IngestionJob,SavedConversation,SearchResult,Source} from '../types';
 export const api={
-  health:()=>request<{status:string;service:string}>('/api/health'),
+  health:()=>request<HealthStatus>('/api/health'),
   documents:()=>request<DocumentItem[]>('/api/documents'),
   chat:(message:string,document_hash:string|undefined,mode:'direct'|'ai',conversation_id?:string,history:Array<Record<string,string>>=[])=>request<ChatResponse>('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,document_hash,mode,conversation_id,history})}),
   search:(query:string)=>request<{results:SearchResult[]}>('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,limit:100})}),
   upload:(file:File)=>{const body=new FormData();body.append('file',file);return request<DocumentItem>('/api/documents/upload',{method:'POST',body})},
+  uploadAsync:(file:File)=>{const body=new FormData();body.append('file',file);return request<IngestionJob>('/api/documents/upload-async',{method:'POST',body})},
+  ingestionJobs:()=>request<IngestionJob[]>('/api/ingestion/jobs'),
+  retryIngestion:(id:string)=>request<IngestionJob>(`/api/ingestion/jobs/${id}/retry`,{method:'POST'}),
+  reindex:(id:string)=>request<{document_id:string;chunks:number;status:string}>(`/api/documents/${id}/reindex`,{method:'POST'}),
   remove:(id:string)=>request<void>(`/api/documents/${id}`,{method:'DELETE'}),
   source:(hash:string,block:string)=>request<Source>(`/api/sources/${hash}/${block}`),
   documentSource:(hash:string)=>request<Source>(`/api/documents/${hash}/source`),
   conversations:()=>request<ConversationSummary[]>('/api/conversations'),
   conversation:(id:string)=>request<SavedConversation>(`/api/conversations/${id}`),
   saveConversation:(id:string,payload:Record<string,unknown>)=>request<void>(`/api/conversations/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),
-  originalUrl:(hash:string,download=false)=>`${API_BASE}/api/documents/${hash}/content${download?'?download=true':''}`
+  deleteConversation:(id:string)=>request<void>(`/api/conversations/${id}`,{method:'DELETE'}),
+  renameConversation:(id:string,title:string)=>request<void>(`/api/conversations/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})}),
+  originalUrl:(hash:string,download=false)=>`${API_BASE}/api/documents/${hash}/content${download?'?download=true':''}`,
+  previewUrl:(hash:string)=>`${API_BASE}/api/documents/${hash}/preview`,
+  previewInfo:(hash:string,blockId:string)=>request<{page:number;pages:number}>(`/api/documents/${hash}/preview-info?block_id=${encodeURIComponent(blockId)}`),
+  tableEvidence:(hash:string,sheet?:string)=>request<{kind:string;sheet:string|null;sheets:string[];rows:unknown[][];max_row:number;max_column:number}>(`/api/documents/${hash}/table${sheet?`?sheet=${encodeURIComponent(sheet)}`:''}`)
 };

@@ -3,7 +3,7 @@
 This module is deliberately declarative in Sub-phase 1.1.  It defines the
 public data contracts that later phases will use to share production behavior
 between the Streamlit application, diagnostics, and evaluation.  It must not
-perform retrieval, access ChromaDB, call Ollama, construct prompts, or import
+perform retrieval, access ChromaDB, call a generation provider, construct prompts, or import
 the Streamlit application.
 
 The public API is versioned so internal implementation can evolve without
@@ -110,7 +110,7 @@ class RAGConfig:
     chroma_path: str = "chroma_db_local_v2"
     collection_name: str = "documents"
     embedding_model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"
-    llm_model_name: str = "qwen3:8b"
+    llm_model_name: str = "gemini-3.6-flash"
     vector_candidate_count: int = 10
     bm25_candidate_count: int = 10
     rrf_k: int = 60
@@ -391,10 +391,13 @@ class VectorStore(Protocol):
 
 @runtime_checkable
 class TextGenerator(Protocol):
-    """Minimal interface required by a future Ollama-compatible adapter."""
+    """Minimal interface required by an API-backed generation provider."""
 
-    def chat(self, **kwargs: Any) -> Any:
-        """Generate a completion in the provider's native representation."""
+    def generate(self, prompt: str) -> str:
+        """Generate a complete response."""
+
+    def stream(self, prompt: str) -> Any:
+        """Yield genuine response deltas."""
 
 
 class PipelineRuntime(Protocol):
@@ -771,15 +774,17 @@ QUESTION : {user_query}
 QUESTION REFORMULÉE :"""
 
     try:
-        response = generator.chat(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt_rewrite}],
-            options={"temperature": 0.0},
-        )
-        reformulated = response["message"]["content"].strip()
+        if hasattr(generator, "generate"):
+            reformulated = generator.generate(prompt_rewrite).strip()
+        else:  # Backward-compatible boundary for external test/evaluation adapters.
+            response = generator.chat(
+                model=model_name, messages=[{"role": "user", "content": prompt_rewrite}],
+                options={"temperature": 0.0},
+            )
+            reformulated = response["message"]["content"].strip()
         query = reformulated if reformulated else user_query
     except Exception as error:
-        error_reporter(f"Ollama Error in contextualize_query: {error}")
+        error_reporter(f"Generation provider error in contextualize_query: {error}")
         query = user_query
 
     return QueryRewriteResult(query=query, latency_ms=(clock() - start) * 1000)
@@ -794,18 +799,21 @@ def stream_generate(
     clarification_language: str | None = None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> GenerationResult:
-    """Stream the active production Ollama request without owning UI rendering."""
+    """Stream the active API provider request without owning UI rendering."""
 
     start = clock()
-    stream = generator.chat(
-        model=model_name,
-        messages=[{"role": "user", "content": prompt}],
-        options={"temperature": 0.2},
-        stream=True,
-    )
+    if callable(getattr(generator, "stream", None)):
+        stream = generator.stream(prompt)
+        text_deltas = True
+    else:  # Backward-compatible boundary for external test/evaluation adapters.
+        stream = generator.chat(
+            model=model_name, messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.2}, stream=True,
+        )
+        text_deltas = False
     response = ""
     for chunk in stream:
-        content = chunk.get("message", {}).get("content", "")
+        content = str(chunk) if text_deltas else chunk.get("message", {}).get("content", "")
         if content:
             response += content
             if on_token:

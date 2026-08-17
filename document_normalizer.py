@@ -310,17 +310,50 @@ def _rows_to_blocks(rows: list[list[Any]], *, source_file: str, file_hash: str,
 
 def _xlsx_blocks(data: bytes, source_file: str, file_hash: str) -> list[CanonicalBlock]:
     from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
 
-    workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    workbook = load_workbook(io.BytesIO(data), read_only=False, data_only=True)
+    formula_workbook = load_workbook(io.BytesIO(data), read_only=False, data_only=False)
     blocks: list[CanonicalBlock] = []
     try:
         for worksheet in workbook.worksheets:
             rows = [list(row) for row in worksheet.iter_rows(values_only=True)]
-            blocks.extend(_rows_to_blocks(rows, source_file=source_file, file_hash=file_hash,
-                                          sheet=worksheet.title, ordinal_start=len(blocks),
-                                          allow_two_column_key_values=True))
+            formula_sheet = formula_workbook[worksheet.title]
+            merged_ranges = [str(cell_range) for cell_range in formula_sheet.merged_cells.ranges]
+            # Propagate a merged region's top-left value into the logical rows;
+            # the workbook itself remains immutable.
+            for merged in formula_sheet.merged_cells.ranges:
+                value = formula_sheet.cell(merged.min_row, merged.min_col).value
+                for row_number in range(merged.min_row, merged.max_row + 1):
+                    while len(rows) < row_number:
+                        rows.append([])
+                    while len(rows[row_number - 1]) < merged.max_col:
+                        rows[row_number - 1].append(None)
+                    for column_number in range(merged.min_col, merged.max_col + 1):
+                        if rows[row_number - 1][column_number - 1] is None:
+                            rows[row_number - 1][column_number - 1] = value
+            formulas = {cell.coordinate: cell.value for row in formula_sheet.iter_rows() for cell in row
+                        if isinstance(cell.value, str) and cell.value.startswith("=")}
+            sheet_blocks = _rows_to_blocks(rows, source_file=source_file, file_hash=file_hash,
+                                           sheet=worksheet.title, ordinal_start=len(blocks),
+                                           allow_two_column_key_values=True)
+            width = max((len(row) for row in rows), default=1)
+            for block in sheet_blocks:
+                strategy = block.metadata.get("normalization_strategy")
+                if strategy == "column_records" and block.row_index is not None:
+                    column = get_column_letter(block.row_index + 1)
+                    cell_range = f"{column}1:{column}{max(len(rows), 1)}"
+                elif block.row_index is not None:
+                    cell_range = f"A{block.row_index}:{get_column_letter(width)}{block.row_index}"
+                else:
+                    cell_range = None
+                metadata = {**block.metadata, "sheet_visibility": worksheet.sheet_state,
+                            "cell_range": cell_range, "merged_ranges": merged_ranges,
+                            "formulas": formulas}
+                blocks.append(CanonicalBlock(**{**asdict(block), "metadata": metadata}))
     finally:
         workbook.close()
+        formula_workbook.close()
     return blocks
 
 
@@ -344,7 +377,8 @@ def _csv_blocks(data: bytes, source_file: str, file_hash: str) -> tuple[list[Can
     rows = list(csv.reader(io.StringIO(text), dialect))
     blocks = _rows_to_blocks(rows, source_file=source_file, file_hash=file_hash, sheet=None)
     for index, block in enumerate(blocks):
-        metadata = {**block.metadata, "encoding": encoding}
+        metadata = {**block.metadata, "encoding": encoding,
+                    "row_start": block.row_index, "row_end": block.row_index}
         blocks[index] = CanonicalBlock(**{**asdict(block), "metadata": metadata})
     return blocks, warnings
 

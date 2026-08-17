@@ -75,12 +75,14 @@ def test_source_target_preserves_exact_provenance_for_supported_locations():
     block = CanonicalBlock(
         "b", "Host = 10.0.0.1", "key_value", "sample.pdf", "h",
         section="Distribution", page=7, sheet=None, table_index=3, row_index=14,
-        paragraph_index=8, metadata={"bbox": [10, 20, 100, 40], "page_end": 8},
+        paragraph_index=8, metadata={"bbox": [10, 20, 100, 40], "page_end": 8,
+                                     "row_end": 15, "cell_range": "A14:D15"},
     )
     target = SourceTarget.from_block(block, "pdf")
     assert target.page == 7 and target.page_end == 8
     assert target.section == "Distribution"
     assert target.table_index == 3 and target.row_index == 14
+    assert target.row_end == 15 and target.cell_range == "A14:D15"
     assert target.paragraph_index == 8
     assert target.bbox == (10.0, 20.0, 100.0, 40.0)
     assert "Page 7" in target.location_label and "Row: 14" in target.location_label

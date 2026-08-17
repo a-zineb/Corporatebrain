@@ -1,169 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import type { DocumentItem } from '../../types';
-import {
-  buildDocumentGraph,
-  filterGraphToFocus,
-  simulateGraph,
-  type GraphEdge,
-  type GraphNode,
-} from '../../utils/documentTypes';
+import {Maximize2,Minus,Plus,RotateCcw,Search} from 'lucide-react';
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {useNavigate} from 'react-router-dom';
+import type {DocumentItem} from '../../types';
+import {buildDocumentGraph,filterGraphToFocus,fuzzyDocumentMatch,simulateGraph,type GraphEdge} from '../../utils/documentTypes';
 
-export function DocumentGraph({ documents }: { documents: DocumentItem[] }) {
-  const navigate = useNavigate();
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [focusId, setFocusId] = useState<string | null>(null);
-  const [hoverId, setHoverId] = useState<string | null>(null);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(
-    null,
-  );
+type Mode='global'|'focused'|'community';
+const colors:Record<string,string>={pdf:'#ef5350',docx:'#42a5f5',doc:'#42a5f5',xlsx:'#66bb6a',csv:'#ffa726',zip:'#ab47bc'};
 
-  const fullGraph = useMemo(
-    () => buildDocumentGraph(documents),
-    [documents],
-  );
-
-  const layout = useMemo(() => {
-    const { nodes, edges } = focusId
-      ? filterGraphToFocus(fullGraph.nodes, fullGraph.edges, focusId)
-      : fullGraph;
-    if (nodes.length === 0) return { nodes: [], edges: [] };
-    const simulated = simulateGraph(nodes, edges, 800, 520);
-    return { nodes: simulated, edges };
-  }, [fullGraph, focusId]);
-
-  const hoverNode = layout.nodes.find((n) => n.id === hoverId);
-
-  function onWheel(e: React.WheelEvent) {
-    e.preventDefault();
-    setZoom((z) => Math.min(2.5, Math.max(0.4, z - e.deltaY * 0.001)));
-  }
-
-  function onPointerDown(e: React.PointerEvent) {
-    if (e.button !== 0) return;
-    dragRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-  }
-
-  function onPointerMove(e: React.PointerEvent) {
-    if (!dragRef.current) return;
-    setPan({
-      x: dragRef.current.panX + (e.clientX - dragRef.current.x),
-      y: dragRef.current.panY + (e.clientY - dragRef.current.y),
-    });
-  }
-
-  function onPointerUp() {
-    dragRef.current = null;
-  }
-
-  function nodeRadius(n: GraphNode) {
-    return 14 + n.connections * 4;
-  }
-
-  if (documents.length < 2) {
-    return (
-      <div className="graph-empty surface-card">
-        <h2>Not enough documents</h2>
-        <p>
-          Upload at least 2 documents to see how they connect in Graph View.
-        </p>
-      </div>
-    );
-  }
-
-  if (fullGraph.edges.length === 0) {
-    return (
-      <div className="graph-empty surface-card">
-        <h2>No connections yet</h2>
-        <p>
-          Upload more documents to see connections — Graph View needs documents
-          that share at least 5 keywords.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="graph-container">
-      <div className="graph-toolbar">
-        {focusId ? (
-          <button type="button" className="chip" onClick={() => setFocusId(null)}>
-            ← Back to Global View
-          </button>
-        ) : (
-          <span className="graph-toolbar__hint">
-            Global view · scroll to zoom · drag to pan · click node to focus
-          </span>
-        )}
-        <button
-          type="button"
-          className="chip"
-          onClick={() => {
-            setPan({ x: 0, y: 0 });
-            setZoom(1);
-          }}
-        >
-          Reset view
-        </button>
-      </div>
-
-      <svg
-        ref={svgRef}
-        className="graph-canvas"
-        viewBox="0 0 800 520"
-        onWheel={onWheel}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerLeave={onPointerUp}
-      >
-        <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
-          {layout.edges.map((e: GraphEdge) => {
-            const a = layout.nodes.find((n) => n.id === e.source)!;
-            const b = layout.nodes.find((n) => n.id === e.target)!;
-            return (
-              <line
-                key={`${e.source}-${e.target}`}
-                x1={a.x}
-                y1={a.y}
-                x2={b.x}
-                y2={b.y}
-                className="graph-edge"
-                strokeWidth={Math.min(4, 1 + e.weight * 0.2)}
-              />
-            );
-          })}
-          {layout.nodes.map((n) => (
-            <g
-              key={n.id}
-              transform={`translate(${n.x},${n.y})`}
-              className={`graph-node${focusId === n.id ? ' graph-node--focus' : ''}`}
-              onMouseEnter={() => setHoverId(n.id)}
-              onMouseLeave={() => setHoverId(null)}
-              onClick={() => setFocusId(n.id)}
-              onDoubleClick={() => navigate('/')}
-              style={{ cursor: 'pointer' }}
-            >
-              <circle r={nodeRadius(n)} className="graph-node__circle" />
-              <text y={nodeRadius(n) + 14} textAnchor="middle" className="graph-node__label">
-                {n.label.length > 22 ? `${n.label.slice(0, 20)}…` : n.label}
-              </text>
-            </g>
-          ))}
-        </g>
-      </svg>
-
-      {hoverNode && (
-        <div className="graph-tooltip surface-card">
-          <strong>{hoverNode.label}</strong>
-          <span>{hoverNode.type.toUpperCase()}</span>
-          <span>{hoverNode.connections} connection(s)</span>
-          <small>Click to focus · Double-click to open chat</small>
-        </div>
-      )}
-    </div>
-  );
+export function DocumentGraph({documents}:{documents:DocumentItem[]}){
+  const navigate=useNavigate();const container=useRef<HTMLDivElement>(null);
+  const [selected,setSelected]=useState<string|null>(null);const [edge,setEdge]=useState<GraphEdge|null>(null);const [mode,setMode]=useState<Mode>('global');const [query,setQuery]=useState('');const [type,setType]=useState('all');const [labels,setLabels]=useState(true);const [zoom,setZoom]=useState(1);const [pan,setPan]=useState({x:0,y:0});
+  const filtered=useMemo(()=>documents.filter(doc=>(type==='all'||doc.type===type)&&fuzzyDocumentMatch(doc,query)),[documents,type,query]);
+  const graph=useMemo(()=>buildDocumentGraph(filtered),[filtered]);
+  const visible=useMemo(()=>{if(mode==='focused'&&selected)return filterGraphToFocus(graph.nodes,graph.edges,selected);if(mode==='community'){const groups=[...new Set(graph.nodes.map(node=>`${node.document.filiale??'Other'}:${node.document.application??'Other'}`))];return {...graph,nodes:graph.nodes.map((node,index)=>{const group=groups.indexOf(`${node.document.filiale??'Other'}:${node.document.application??'Other'}`);const angle=(index/Math.max(graph.nodes.length,1))*Math.PI*2;return {...node,x:180+(group%3)*320+Math.cos(angle)*70,y:170+Math.floor(group/3)*260+Math.sin(angle)*70}})}}return graph},[graph,mode,selected]);
+  const layout=useMemo(()=>simulateGraph(visible.nodes,visible.edges,1000,620,180),[visible]);
+  const selectedNode=layout.find(node=>node.id===selected)??graph.nodes.find(node=>node.id===selected);
+  const neighbors=new Set(graph.edges.flatMap(item=>item.source===selected?[item.target]:item.target===selected?[item.source]:[]));
+  function select(id:string){setSelected(id);setEdge(null);if(mode==='focused')setMode('focused')}
+  useEffect(()=>{if(query.trim()&&filtered.length)setSelected(filtered[0].id)},[query,filtered]);
+  function reset(){setZoom(1);setPan({x:0,y:0});setSelected(null);setEdge(null)}
+  if(!documents.length)return <div className="graph-empty surface-card"><h2>No ready documents</h2><p>Upload a document to build the knowledge graph.</p></div>;
+  return <div className="graph-shell" ref={container}><div className="graph-filters"><label><Search size={15}/><input placeholder="Search documents" value={query} onChange={e=>setQuery(e.target.value)}/></label><select value={type} onChange={e=>setType(e.target.value)}><option value="all">All types</option>{[...new Set(documents.map(d=>d.type))].map(value=><option key={value}>{value}</option>)}</select>{(['global','focused','community'] as Mode[]).map(value=><button className={mode===value?'active':''} key={value} onClick={()=>setMode(value)}>{value[0].toUpperCase()+value.slice(1)}</button>)}<button onClick={()=>{setQuery('');setType('all')}}>Clear filters</button></div><div className="graph-workspace"><div className="graph-container"><div className="graph-controls"><button title="Zoom in" aria-label="Zoom in" onClick={()=>setZoom(v=>Math.min(2.5,v+.2))}><Plus/></button><button title="Zoom out" aria-label="Zoom out" onClick={()=>setZoom(v=>Math.max(.35,v-.2))}><Minus/></button><button title="Reset layout" aria-label="Reset layout" onClick={reset}><RotateCcw/></button><button title="Toggle labels" onClick={()=>setLabels(v=>!v)}>Aa</button><button title="Fullscreen" aria-label="Fullscreen" onClick={()=>void container.current?.requestFullscreen()}><Maximize2/></button></div>{layout.length?<svg className="graph-canvas" viewBox="0 0 1000 620" onWheel={event=>{event.preventDefault();setZoom(v=>Math.max(.35,Math.min(2.5,v-event.deltaY*.001)))}}><g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>{visible.edges.map(item=>{const a=layout.find(n=>n.id===item.source),b=layout.find(n=>n.id===item.target);if(!a||!b)return null;const active=!selected||item.source===selected||item.target===selected;return <line key={`${item.source}:${item.target}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className={`graph-edge ${active?'':'graph-edge--dim'}`} style={{strokeWidth:1+item.weight*7,opacity:.18+item.weight*.7}} onClick={()=>setEdge(item)}/>})}{layout.map(node=>{const dim=Boolean(selected&&node.id!==selected&&!neighbors.has(node.id));const short=node.label.length>25?`${node.label.slice(0,23)}…`:node.label;return <g key={node.id} transform={`translate(${node.x} ${node.y})`} className={`graph-node ${node.id===selected?'graph-node--focus':''} ${dim?'graph-node--dim':''}`} tabIndex={0} role="button" aria-label={node.label} onClick={()=>select(node.id)} onKeyDown={e=>{if(e.key==='Enter')select(node.id)}}><title>{node.label} · {node.connections} connections · {node.document.blocks} blocks</title><circle r={node.radius} fill={colors[node.type]??'#78909c'}/><text textAnchor="middle" dy="4" className="graph-node__type">{node.type.toUpperCase()}</text>{labels&&<text y={node.radius+17} textAnchor="middle" className="graph-node__label">{short}</text>}</g>})}</g></svg>:<div className="graph-empty"><h2>No matching documents</h2><p>Clear filters or lower the search scope.</p></div>}</div><aside className="graph-details">{edge?<><h3>Document relation</h3><strong>{graph.nodes.find(n=>n.id===edge.source)?.label}</strong><span>↔</span><strong>{graph.nodes.find(n=>n.id===edge.target)?.label}</strong><p>Relation score: {edge.weight.toFixed(2)}</p><ul>{edge.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul></>:selectedNode?<><span className="badge">{selectedNode.type.toUpperCase()}</span><h3>{selectedNode.label}</h3><p>{selectedNode.document.blocks} blocks · {selectedNode.connections} connections</p><p>{selectedNode.document.filiale??'No zone'} · {selectedNode.document.application??'No application'}</p><button onClick={()=>window.open(`/api/documents/${selectedNode.id}/content`,'_blank')}>Open document</button><button onClick={()=>{sessionStorage.setItem('cb-graph-document',selectedNode.id);navigate('/')}}>Ask about this document</button><h4>Related documents</h4>{graph.edges.filter(item=>item.source===selectedNode.id||item.target===selectedNode.id).map(item=><button key={`${item.source}:${item.target}`} onClick={()=>select(item.source===selectedNode.id?item.target:item.source)}>{graph.nodes.find(n=>n.id===(item.source===selectedNode.id?item.target:item.source))?.label}</button>)}</>:<><h3>Knowledge graph</h3><p>Select a node or relation to inspect it.</p><div className="graph-legend">{Object.entries(colors).map(([kind,color])=><span key={kind}><i style={{background:color}}/>{kind.toUpperCase()}</span>)}<small>Node size represents prepared blocks (18–46 px). Edge thickness represents relation strength.</small></div></>}</aside></div></div>
 }

@@ -57,6 +57,8 @@ class SourceTarget:
     section: str | None = None
     table_index: int | None = None
     row_index: int | None = None
+    row_end: int | None = None
+    cell_range: str | None = None
     paragraph_index: int | None = None
     bbox: tuple[float, float, float, float] | None = None
     evidence_text: str = ""
@@ -68,7 +70,8 @@ class SourceTarget:
         return cls(
             block.source_file, block.file_hash, block.block_id, file_type,
             block.page, block.metadata.get("page_end"), block.sheet, block.section,
-            block.table_index, block.row_index, block.paragraph_index, bbox, block.text,
+            block.table_index, block.row_index, block.metadata.get("row_end"),
+            block.metadata.get("cell_range"), block.paragraph_index, bbox, block.text,
         )
 
     @property
@@ -80,6 +83,8 @@ class SourceTarget:
             parts.append(f"Sheet: {self.sheet}")
         if self.row_index is not None:
             parts.append(f"Row: {self.row_index}")
+        if self.cell_range:
+            parts.append(f"Cells: {self.cell_range}")
         if self.section:
             parts.append(self.section)
         return " · ".join(parts) or "Document"

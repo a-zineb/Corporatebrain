@@ -1,7 +1,7 @@
 # Corporate Brain
 
-Corporate Brain is a local enterprise RAG application for deterministic document
-answers, hybrid retrieval and Ollama/Qwen synthesis with cited sources.
+Corporate Brain is an enterprise RAG application for deterministic document
+answers, local hybrid retrieval and Gemini API synthesis with cited sources.
 
 ## One-command startup
 
@@ -40,7 +40,9 @@ FastAPI adapter (backend/)
           ↓ direct function calls
 canonical_rag.py / rag_pipeline.py / document_normalizer.py
           ↓
-ChromaDB + BM25/RRF + MiniLM + Ollama/Qwen
+ChromaDB + BM25/RRF + MiniLM (local retrieval)
+          ↓ selected evidence only
+Gemini API through the official Google Gen AI SDK (AI Answer generation)
 
 Streamlit app.py remains available during migration and uses the same services.
 ```
@@ -48,13 +50,16 @@ Streamlit app.py remains available during migration and uses the same services.
 FastAPI is an adapter over the canonical document engine. Direct Answer remains
 deterministic. AI Answer classifies the query intent, resolves same-document
 follow-ups, saturates structured/exhaustive retrieval over the selected
-document, and asks Ollama for validated JSON claims tied to canonical block IDs.
+document, and asks the configured Gemini model to synthesize the application-selected evidence. Gemini returns conversational Markdown;
+source cards remain application-controlled. AI Answer searches all prepared
+documents by default and does not require a selected file. Direct Answer remains
+strictly selected-document only, and Knowledge Catalog makes no Gemini call.
 
 ## Features
 
 - PDF, DOCX, DOC, XLSX, CSV and ZIP ingestion in the existing Streamlit flow
-- Deterministic selected-document Direct Answer without Ollama
-- Hybrid vector/BM25 retrieval with RRF and local Ollama generation
+- Deterministic selected-document Direct Answer without an API call
+- Hybrid vector/BM25 retrieval with RRF and API-backed generation
 - Global prepared-document search and exact canonical source navigation
 - OCM/OEG/OJO/OCI and MZ/KPSA metadata values preserved
 - React dark/light/system themes and collapsible responsive sidebar
@@ -78,7 +83,27 @@ Optional environment variables:
 - `CORPORATE_BRAIN_STORAGE_DIR`
 - `CORPORATE_BRAIN_CHROMA_PATH`
 - `CORPORATE_BRAIN_COLLECTION`
-- `CORPORATE_BRAIN_OLLAMA_MODEL`
+- `AI_PROVIDER`
+- `GEMINI_MODEL`
+- `GEMINI_TIMEOUT_SECONDS`
+- `GEMINI_TEMPERATURE`
+- `GEMINI_TOP_P`
+- `GEMINI_MAX_OUTPUT_TOKENS`
+- `GEMINI_ENABLE_STREAMING`
+
+## Gemini API setup
+
+1. Create a Gemini API key in Google AI Studio.
+2. Copy `.env.example` to a root `.env` and set `GEMINI_API_KEY=...`.
+3. Keep `AI_PROVIDER=gemini`; the default model is `gemini-3.6-flash`.
+4. Never place this secret in `frontend/.env.local`, a `VITE_` variable, source
+   code, or browser storage.
+5. Restart Corporate Brain with `./run` and verify AI Answer.
+
+If the key is missing, rejected, rate-limited, or the network times out, AI
+Answer reports a safe provider error. Direct Answer, catalog/search, graph, and
+source navigation remain available. The backend never returns the key; Settings
+shows only whether the provider is configured.
 
 ## Frontend development
 
@@ -118,10 +143,48 @@ uploads, deletion and source navigation pass the browser acceptance checklist.
 - `GET /api/filters`
 - `GET /api/documents`
 - `POST /api/documents/upload`
+- `POST /api/documents/upload-async`
+- `GET /api/ingestion/jobs`
+- `POST /api/ingestion/jobs/{job_id}/retry`
+- `POST /api/documents/{file_hash}/reindex`
 - `DELETE /api/documents/{file_hash}`
+- `GET /api/documents/{file_hash}/content` (registered files only; no client path)
+- `GET /api/documents/{file_hash}/preview` (cached rendered DOCX PDF)
+- `GET /api/documents/{file_hash}/preview-info?block_id=...`
+- `GET /api/documents/{file_hash}/table?sheet=...`
 - `POST /api/search`
 - `GET /api/sources/{file_hash}/{block_id}`
 - `POST /api/chat` with `mode: direct | ai`
+- `GET|PUT|PATCH|DELETE /api/conversations/{conversation_id}`
+
+Spreadsheet citations expose the exact sheet and cell range. CSV citations
+expose the original row number. PDF citations open the registered original at
+the one-based PDF page using `#page=N`; arbitrary filesystem paths are never
+accepted by the API.
+
+DOCX evidence previews are generated lazily with Microsoft Word on Windows and
+cached under `.run/previews` by document checksum. The original DOCX remains
+immutable and is served separately. If Word automation is unavailable, the API
+returns a controlled 503 response and the UI keeps the original-file action.
+
+Asynchronous ingestion reports real pipeline stages (`uploading`, `extracting`,
+`normalizing`, `chunking`, `embedding`, `indexing`, then `ready`, `warning`, or
+`failed`). Retry reuses the retained upload payload. Re-index deletes only the
+selected document's old Chroma records by checksum/source identity before
+adding stable block IDs and rebuilding BM25.
+
+## Graph View
+
+Graph View uses bounded 18–46 px nodes, collision-aware force layout, a
+significance threshold, and at most three strongest edges per document. It
+supports approximate search, file-type filtering, Global/Focused/Community
+modes, zoom/reset/fullscreen controls, tooltips, relation explanations, and a
+document detail panel. Run its deterministic tests with:
+
+```powershell
+cd frontend
+npm test
+```
 
 ## Tests
 
@@ -131,6 +194,26 @@ python -m pytest -q
 ```
 
 Document and Chroma data remain local and must not be committed.
+
+### Chroma benchmark and re-indexing
+
+The committed `corporatebrain.v1` benchmark is certified against its immutable
+1,072-chunk corpus. The development upload folder can legitimately produce a
+different count and must not be made to pass by editing that manifest.
+
+Before rebuilding a development index, back up `doc_storage_v2` and
+`chroma_db_local_v2`, remove unintended duplicate uploads through the
+application, and start a fresh collection name:
+
+```powershell
+$env:CORPORATE_BRAIN_COLLECTION="documents-schema-v3"
+./run.ps1
+```
+
+Keep the old collection until representative searches and citations have been
+verified. A parser/schema change requires a new collection name or an explicit
+full re-index; mixing chunks produced by different parser versions is not a
+certified state.
 
 ## Authentication with Clerk
 

@@ -1,11 +1,9 @@
-import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../api/corporateBrain';
-import type { DocumentItem, Theme } from '../types';
+import type { DocumentItem, HealthStatus, Theme } from '../types';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
 import { SurfaceCard } from '../components/ui/PageShell';
 import { useToast } from '../hooks/useToast';
-import { llmModels } from '../data/mockData';
 
 export function SettingsPage({
   theme,
@@ -15,19 +13,14 @@ export function SettingsPage({
   setTheme: (t: Theme) => void;
 }) {
   const { showError, showSuccess } = useToast();
-  const [health, setHealth] = useState<{ status: string; service: string } | null>(
+  const [health, setHealth] = useState<HealthStatus | null>(
     null,
   );
   const [docs, setDocs] = useState<DocumentItem[]>([]);
   const [bannerError, setBannerError] = useState('');
-  const [llm, setLlm] = useState('qwen3');
   const [chunkSize, setChunkSize] = useState(512);
   const [topK, setTopK] = useState(8);
   const [temperature, setTemperature] = useState(0.3);
-  const [keysOpen, setKeysOpen] = useState(false);
-  const [openaiKey, setOpenaiKey] = useState('');
-  const [anthropicKey, setAnthropicKey] = useState('');
-  const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
 
   const load = () => {
     setBannerError('');
@@ -128,16 +121,10 @@ export function SettingsPage({
           <SurfaceCard className="settings-card settings-card--wide">
             <h2>LLM &amp; RAG Pipeline</h2>
             <div className="settings-controls">
-              <label>
-                LLM Model
-                <select value={llm} onChange={(e) => setLlm(e.target.value)}>
-                  {llmModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <dl className="settings-stats">
+                <div><dt>AI Answer</dt><dd>API-backed</dd></div>
+                <div><dt>AI provider configured</dt><dd>{health?.ai_provider_configured ? 'Yes' : 'No'}</dd></div>
+              </dl>
               <label>
                 Chunk Size ({chunkSize} tokens)
                 <input
@@ -171,47 +158,6 @@ export function SettingsPage({
                 />
               </label>
             </div>
-          </SurfaceCard>
-
-          <SurfaceCard className="settings-card settings-card--wide">
-            <button
-              type="button"
-              className="settings-expand"
-              onClick={() => setKeysOpen((v) => !v)}
-            >
-              API Key Configuration
-              {keysOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-            </button>
-            {keysOpen && (
-              <div className="settings-keys">
-                <label>
-                  OpenAI API Key
-                  <input
-                    type="password"
-                    value={openaiKey}
-                    onChange={(e) => setOpenaiKey(e.target.value)}
-                    placeholder="sk-••••••••"
-                  />
-                </label>
-                <label>
-                  Anthropic API Key
-                  <input
-                    type="password"
-                    value={anthropicKey}
-                    onChange={(e) => setAnthropicKey(e.target.value)}
-                    placeholder="sk-ant-••••••••"
-                  />
-                </label>
-                <label>
-                  Ollama Base URL
-                  <input
-                    type="url"
-                    value={ollamaUrl}
-                    onChange={(e) => setOllamaUrl(e.target.value)}
-                  />
-                </label>
-              </div>
-            )}
           </SurfaceCard>
 
           {docs.length > 0 && (

@@ -64,6 +64,8 @@ def test_xlsx_preserves_sheet_rows_columns_and_empty_position():
     result = normalize_document(stream.getvalue(), "systems.xlsx")
     block = result.blocks[0]
     assert block.sheet == "Systems" and block.row_index == 2
+    assert block.metadata["cell_range"] == "A2:D2"
+    assert block.metadata["sheet_visibility"] == "visible"
     assert block.metadata["column_headers"][3] == "FileDirectory"
     assert "System name = BI | Protocol = SFTP | Host = 172.26.60.12" == block.text
 
@@ -86,6 +88,39 @@ def test_xlsx_matrix_and_key_value_relationships_are_preserved():
     assert "do-not-leak" not in result.canonical_text()
 
 
+def test_xlsx_hidden_sheet_is_indexed_with_visibility_and_coordinates():
+    workbook = Workbook()
+    workbook.active.title = "Visible"
+    hidden = workbook.create_sheet("STAT")
+    hidden.sheet_state = "hidden"
+    hidden.append(["Metric", "Value"])
+    hidden.append(["Tests", 7])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    result = normalize_document(stream.getvalue(), "testbook.xlsx")
+    stat = next(block for block in result.blocks if block.sheet == "STAT" and "Tests = 7" in block.text)
+    assert stat.metadata["sheet_visibility"] == "hidden"
+    assert stat.metadata["cell_range"] == "A2:B2"
+
+
+def test_xlsx_preserves_merged_values_formulas_and_multiline_content():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Group", "Value", "Formula"])
+    sheet.append(["Merged group", "line one\nline two", "=1+1"])
+    sheet.append([None, "next", None])
+    sheet.merge_cells("A2:A3")
+    stream = io.BytesIO()
+    workbook.save(stream)
+    result = normalize_document(stream.getvalue(), "structured.xlsx")
+    second = next(block for block in result.blocks if block.row_index == 3)
+    assert "Group = Merged group" in second.text
+    first = next(block for block in result.blocks if block.row_index == 2)
+    assert "line one line two" in first.text
+    assert first.metadata["formulas"]["C2"] == "=1+1"
+    assert "A2:A3" in first.metadata["merged_ranges"]
+
+
 def test_csv_headers_rows_identity_and_no_cross_document_mixing():
     a = normalize_document(b"System,Host,Password\nBI,1.1.1.1,raw-secret\n", "a.csv")
     b = normalize_document(b"System,Host\nBI,2.2.2.2\n", "b.csv")
@@ -93,6 +128,8 @@ def test_csv_headers_rows_identity_and_no_cross_document_mixing():
     assert all(block.file_hash == a.file_hash and block.source_file == "a.csv" for block in a.blocks)
     assert "Host = 1.1.1.1" in a.blocks[0].text
     assert "Password = [REDACTED]" in a.blocks[0].text and "raw-secret" not in a.canonical_text()
+    assert a.blocks[0].metadata["row_start"] == 2
+    assert a.blocks[0].metadata["row_end"] == 2
     assert all(block.block_id not in {other.block_id for other in b.blocks} for block in a.blocks)
 
 

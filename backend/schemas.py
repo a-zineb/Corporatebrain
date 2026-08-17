@@ -26,6 +26,10 @@ class ConversationSave(BaseModel):
     messages: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ConversationRename(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+
+
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     limit: int = Field(default=50, ge=1, le=200)
@@ -41,6 +45,8 @@ class SourceResponse(BaseModel):
     page: int | None = None
     sheet: str | None = None
     row: int | None = None
+    row_end: int | None = None
+    cell_range: str | None = None
     section: str | None = None
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -40,10 +40,7 @@ export function GraphPage() {
           <div>
             <span className="eyebrow">Corpus Visualization</span>
             <h1>Graph View</h1>
-            <p>
-              Obsidian-style map of document connections based on shared keywords
-              (5+ matches).
-            </p>
+            <p>Explore significant document relationships. Select a node for details.</p>
           </div>
         </header>
 

@@ -56,10 +56,26 @@ function Stop-ChildProcess($Process, [string]$Name) {
     }
 }
 
+function Stop-ExistingProjectListener([int]$Port) {
+    $listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    foreach ($listener in $listeners) {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+        if ($null -ne $processInfo -and $processInfo.CommandLine -like "*$projectRoot*") {
+            Write-Host "Stopping previous Corporate Brain process on port $Port..." -ForegroundColor Yellow
+            Stop-Process -Id $listener.OwningProcess -Force -ErrorAction Stop
+        } else {
+            throw "Port $Port is already used by another application. Stop it before starting Corporate Brain."
+        }
+    }
+}
+
 Set-Location -LiteralPath $projectRoot
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 
 try {
+    Stop-ExistingProjectListener 8000
+    Stop-ExistingProjectListener 5173
+
     Write-Step "Checking Python environment"
     if (-not (Test-Path -LiteralPath $venvPython)) {
         $systemPython = Resolve-Command "python"

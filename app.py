@@ -12,7 +12,6 @@ from datetime import datetime
 import pandas as pd
 import docx
 import fitz  # PyMuPDF
-import ollama
 import docx2txt
 import olefile
 import struct
@@ -22,7 +21,10 @@ import rag_pipeline
 import canonical_rag
 import mvp_services
 import ui_components
+from backend.llm import ProviderError, get_generation_provider
 from structured_ingestion import build_structured_docx_index_payload
+
+generation_provider = get_generation_provider()
 
 
 def _env_flag(name: str) -> bool:
@@ -452,7 +454,7 @@ def detect_catalog_continuation(query, previous_actual_mode=None):
 # ==========================================
 # 1. CONFIGURATION DE LA PAGE
 # ==========================================
-st.set_page_config(page_title="Corporate Brain - 100% Local (Qwen3)", layout="wide")
+st.set_page_config(page_title="Corporate Brain", layout="wide")
 ui_components.inject_design()
 
 # ==========================================
@@ -861,7 +863,7 @@ def contextualize_query(user_query, chat_history, model_name):
         user_query,
         chat_history,
         model_name,
-        ollama,
+        generation_provider,
     ).query
 
 # ==========================================
@@ -1226,9 +1228,9 @@ with st.sidebar:
             label_visibility="collapsed"
         )
 
-    st.write("Modèle LLM")
-    st.info("🧠 Qwen3:8b (Local)")
-    selected_model = "qwen3:8b"
+    st.write("AI Answer")
+    st.info("API-backed" if generation_provider.configured else "API key not configured")
+    selected_model = generation_provider.model
 
     st.markdown("---")
 
@@ -1822,7 +1824,7 @@ if user_query:
                 "stages_attempted": list(canonical_trace.stages_attempted),
                 "timings_ms": dict(canonical_trace.timings_ms),
                 "cache_hit": canonical_trace.cache_hit,
-                "ollama_calls": 0, "chroma_calls": 0,
+                "generation_calls": 0, "chroma_calls": 0,
             }, ensure_ascii=False) + "\n")
         st.stop()
 
@@ -2187,7 +2189,7 @@ if user_query:
                     generation_result = rag_pipeline.stream_generate(
                         prompt_instructions,
                         selected_model,
-                        ollama,
+                        generation_provider,
                         on_token=lambda response: response_placeholder.markdown(response + "▌"),
                         clarification_language=current_lang,
                     )
@@ -2259,5 +2261,7 @@ if user_query:
                         "actual_mode": "generative",
                     })
 
-                except Exception as e:
-                  st.error(f"Erreur Ollama: {str(e)}. Assurez-vous que Ollama tourne et que '{selected_model}' est installé.")
+                except ProviderError as e:
+                  st.error(str(e))
+                except Exception:
+                  st.error("AI Answer is temporarily unavailable.")
