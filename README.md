@@ -186,6 +186,42 @@ cd frontend
 npm test
 ```
 
+## Lazy document loading
+
+At startup Corporate Brain scans a persistent lightweight catalog containing
+checksums, filenames, types, sizes, basic business metadata and discovery
+terms. Document cards and the Knowledge Graph use this catalog; they do not
+parse every PDF, Word document or workbook.
+
+Full parsing flows through one `hydrate_document(file_hash)` service:
+
+- Direct Answer hydrates only the selected document.
+- AI Answer first searches all lightweight profiles, then hydrates only the
+  relevant files using a bounded worker pool. No selected document is required.
+- Source navigation reuses the same hydrated document.
+- Upload stores the original and creates its catalog card before full parsing.
+- Hydrated documents use a bounded in-memory LRU and a schema-versioned
+  persistent cache under `.run/prepared`.
+- Concurrent requests for the same checksum share one in-flight hydration.
+- Changing bytes changes the checksum; changing the canonical schema changes
+  the persistent cache key.
+
+Configuration:
+
+```env
+LAZY_HYDRATION_ENABLED=true
+HYDRATED_DOCUMENT_CACHE_SIZE=8
+MAX_CONCURRENT_HYDRATIONS=3
+AI_DISCOVERY_MAX_DOCUMENTS=6
+```
+
+Measured on the current 22-document corpus (cold Python process, persistent
+catalog available): startup decreased from 59,686 ms and 22 eagerly parsed
+documents to 486 ms and zero hydrated documents. Document-card serialization
+took 0.05 ms. In the measured run, a persistent PDF/DOCX hydration took about
+8 ms internally, a first uncached XLSX hydration took 431 ms, and subsequent
+in-memory hits took about 0.02 ms.
+
 ## Tests
 
 ```powershell

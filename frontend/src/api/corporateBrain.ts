@@ -9,6 +9,7 @@ export const api={
   ingestionJobs:()=>request<IngestionJob[]>('/api/ingestion/jobs'),
   retryIngestion:(id:string)=>request<IngestionJob>(`/api/ingestion/jobs/${id}/retry`,{method:'POST'}),
   reindex:(id:string)=>request<{document_id:string;chunks:number;status:string}>(`/api/documents/${id}/reindex`,{method:'POST'}),
+  prefetch:(id:string)=>request<{status:string}>(`/api/documents/${id}/prefetch`,{method:'POST'}),
   remove:(id:string)=>request<void>(`/api/documents/${id}`,{method:'DELETE'}),
   source:(hash:string,block:string)=>request<Source>(`/api/sources/${hash}/${block}`),
   documentSource:(hash:string)=>request<Source>(`/api/documents/${hash}/source`),

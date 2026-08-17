@@ -57,6 +57,7 @@ export function ChatPage() {
   const [bannerError, setBannerError] = useState('');
   const [source, setSource] = useState<Source | null>(null);
   const [conversation, setConversation] = useState<string>();
+  const [aiProgress,setAiProgress]=useState('Searching documents…');
   const conversationEnd = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const uploadPicker = useRef<HTMLInputElement>(null);
@@ -106,6 +107,10 @@ export function ChatPage() {
       block: 'nearest',
     });
   }, [messages, busy]);
+
+  useEffect(()=>{if(doc&&mode==='direct')void api.prefetch(doc).catch(()=>undefined)},[doc,mode]);
+
+  useEffect(()=>{if(!busy||mode!=='ai'){setAiProgress('Searching documents…');return}const reading=setTimeout(()=>setAiProgress('Reading relevant files…'),700);const preparing=setTimeout(()=>setAiProgress('Preparing answer…'),1800);return()=>{clearTimeout(reading);clearTimeout(preparing)}},[busy,mode]);
 
   function newChat() {
     saveHistory(messages, activeDocument);
@@ -217,7 +222,7 @@ export function ChatPage() {
 
   const typingLabel =
     mode === 'ai'
-      ? 'Corporate Brain is generating…'
+      ? aiProgress
       : 'Corporate Brain is searching…';
 
   return (

@@ -54,7 +54,9 @@ def test_reindex_deletes_only_target_document_before_stable_add():
         def encode(self, texts): return [[0.1, 0.2] for _ in texts]
 
     runtime = object.__new__(CorporateBrainRuntime)
-    runtime.registry = type("Registry", (), {"documents": [document]})()
+    runtime.registry = type("Registry", (), {"documents": [document], "remove": lambda *_: None})()
+    runtime.hydrator = type("Hydrator", (), {"invalidate": lambda *_: None})()
+    runtime.hydrate_document = lambda _hash: document
     collection = Collection()
     runtime._load_rag = lambda: (collection, Model(), None)
     runtime._bm25_payload = None
@@ -71,8 +73,7 @@ def test_async_ingestion_reports_real_stage_sequence(monkeypatch):
     runtime._lock = __import__("threading").RLock()
     runtime._jobs = {};runtime._job_payloads={};runtime._paths={}
     runtime._executor = __import__("concurrent.futures").futures.ThreadPoolExecutor(max_workers=1)
-    runtime.registry = type("Registry", (), {"prepare": lambda *_: type("Result", (), {"document": document, "state": "READY"})()})()
-    runtime.reindex = lambda _hash, stage_callback: stage_callback("indexing", 6) or {"status":"ready"}
+    runtime.upload = lambda *_: {"id": "hash", "name": "sample.csv"}
     from backend.services import runtime as runtime_module
     monkeypatch.setattr(runtime_module, "STORAGE_DIR", Path(__file__).parent / ".tmp-ingestion")
     runtime_module.STORAGE_DIR.mkdir(exist_ok=True)
@@ -82,6 +83,6 @@ def test_async_ingestion_reports_real_stage_sequence(monkeypatch):
         if current["status"] != "running": break
         time.sleep(.01)
     assert current["stage"] == "ready"
-    assert current["completed_stages"] == current["total_stages"] == 7
+    assert current["completed_stages"] == current["total_stages"] == 2
     (runtime_module.STORAGE_DIR / "sample.csv").unlink(missing_ok=True)
     runtime_module.STORAGE_DIR.rmdir()

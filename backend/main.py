@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -45,6 +47,22 @@ def filters():
 @app.get("/api/documents")
 def documents():
     return get_runtime().documents()
+
+
+@app.post("/api/documents/{file_hash}/prefetch", status_code=202)
+def prefetch_document(file_hash: str):
+    try:
+        get_runtime().prefetch(file_hash)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Document not found") from exc
+    return {"status": "preparing"}
+
+
+@app.get("/api/debug/lazy-metrics")
+def lazy_metrics():
+    if os.getenv("CORPORATE_BRAIN_DEBUG", "false").casefold() not in {"1", "true", "yes", "on"}:
+        raise HTTPException(status_code=404, detail="Not found")
+    return get_runtime().debug_metrics()
 
 
 @app.post("/api/documents/upload", status_code=201)

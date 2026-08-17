@@ -19,6 +19,7 @@ from backend.services.ai_quality import (build_conversational_prompt, classify_i
                                          retrieve_evidence, rewrite_follow_up)
 from backend.llm import GenerationProvider, get_generation_provider
 from backend.services.evidence import PreviewService, read_tabular_evidence
+from backend.services.lazy_documents import DocumentHydrator, LightweightCatalog
 from mvp_services import PreparedDocumentRegistry, detect_query_language
 
 
@@ -28,12 +29,15 @@ STORAGE_DIR = Path(os.getenv("CORPORATE_BRAIN_STORAGE_DIR", ROOT / "doc_storage_
 CHROMA_PATH = str(Path(os.getenv("CORPORATE_BRAIN_CHROMA_PATH", ROOT / "chroma_db_local_v2")))
 COLLECTION_NAME = os.getenv("CORPORATE_BRAIN_COLLECTION", "documents")
 PREVIEW_DIR = ROOT / ".run" / "previews"
+CATALOG_PATH = ROOT / ".run" / "document_catalog.json"
+PREPARED_CACHE_DIR = ROOT / ".run" / "prepared"
 
 
 class CorporateBrainRuntime:
     """Thin reusable facade over the existing canonical and RAG functions."""
 
     def __init__(self, generation_provider: GenerationProvider | None = None) -> None:
+        started = time.perf_counter()
         self.registry = PreparedDocumentRegistry()
         self._paths: dict[str, Path] = {}
         self._lock = RLock()
@@ -44,34 +48,50 @@ class CorporateBrainRuntime:
         self.previews = PreviewService(PREVIEW_DIR)
         self._jobs: dict[str, dict[str, object]] = {}
         self._job_payloads: dict[str, tuple[str, bytes]] = {}
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="corporate-ingest")
-        self.refresh_documents()
+        hydration_workers = int(os.getenv("MAX_CONCURRENT_HYDRATIONS", "3"))
+        self._executor = ThreadPoolExecutor(max_workers=max(1, hydration_workers), thread_name_prefix="corporate-work")
+        self.catalog = LightweightCatalog(STORAGE_DIR, CATALOG_PATH)
+        self.hydrator = DocumentHydrator(
+            self.catalog, PREPARED_CACHE_DIR,
+            int(os.getenv("HYDRATED_DOCUMENT_CACHE_SIZE", "8")),
+            hydration_workers,
+            self.registry.remove,
+        )
+        self.lazy_enabled = os.getenv("LAZY_HYDRATION_ENABLED", "true").casefold() in {"1", "true", "yes", "on"}
+        self._paths = {item.file_hash: Path(item.path) for item in self.catalog.entries.values()}
+        if not self.lazy_enabled:
+            for file_hash in self.catalog.entries:
+                try:
+                    self.hydrate_document(file_hash)
+                except Exception:
+                    continue
+        self.startup_ms = (time.perf_counter() - started) * 1000
 
     def refresh_documents(self) -> None:
-        STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-        for path in sorted(STORAGE_DIR.iterdir()):
-            if not path.is_file() or path.suffix.casefold() not in {".pdf", ".docx", ".doc", ".xlsx", ".csv", ".zip"}:
-                continue
-            try:
-                result = self.registry.prepare(path.read_bytes(), path.name)
-            except OSError:
-                continue
-            if result.document is not None:
-                self._paths[result.document.file_hash] = path
+        self.catalog.refresh()
+        self._paths = {item.file_hash: Path(item.path) for item in self.catalog.entries.values()}
+
+    def hydrate_document(self, file_hash: str):
+        existing = next((item for item in self.registry.documents if item.file_hash == file_hash), None)
+        if existing is not None:
+            return existing
+        document = self.hydrator.hydrate(file_hash)
+        self.registry.add(document)
+        return document
+
+    def prefetch(self, file_hash: str) -> None:
+        self.hydrator.prefetch(file_hash)
 
     def documents(self) -> list[dict[str, object]]:
         return [{
-            "id": document.file_hash,
-            "name": document.source_file,
-            "type": document.file_type,
-            "status": canonical_rag.ingestion_diagnostics(document).status,
-            "blocks": len(document.blocks),
-            "warnings": list(document.warnings),
-            "filiale": next((zone for zone in ("OCM", "OEG", "OJO", "OCI")
-                              if zone in document.source_file.upper()), None),
-            "application": next((app for app in ("MZ", "KPSA")
-                                  if app in document.source_file.upper()), None),
-        } for document in self.registry.documents]
+            "id": item.file_hash, "name": item.filename, "type": item.file_type,
+            "status": "FAILED" if item.status == "FAILED" else
+                      "WARNING" if item.status == "READY_WITH_WARNINGS" else
+                      "PREPARING" if item.status == "HYDRATING" else "READY",
+            "lifecycle_state": item.status, "blocks": item.blocks,
+            "warnings": item.warnings or [], "filiale": item.filiale,
+            "application": item.application, "size": item.file_size,
+        } for item in sorted(self.catalog.entries.values(), key=lambda value: value.filename.casefold())]
 
     def document_path(self, file_hash: str) -> Path:
         path = self._paths.get(file_hash)
@@ -81,7 +101,7 @@ class CorporateBrainRuntime:
 
     def preview_path(self, file_hash: str) -> Path:
         path = self.document_path(file_hash)
-        document = next((item for item in self.registry.documents if item.file_hash == file_hash), None)
+        document = self.hydrate_document(file_hash)
         if document is None or document.file_type not in {"docx", "doc"}:
             raise KeyError(file_hash)
         preview, _ = self.previews.ensure(path, document)
@@ -89,7 +109,7 @@ class CorporateBrainRuntime:
 
     def preview_info(self, file_hash: str, block_id: str) -> dict[str, object]:
         path = self.document_path(file_hash)
-        document = next((item for item in self.registry.documents if item.file_hash == file_hash), None)
+        document = self.hydrate_document(file_hash)
         if document is None or document.file_type not in {"docx", "doc"}:
             raise KeyError(file_hash)
         preview, mapping = self.previews.ensure(path, document)
@@ -106,16 +126,14 @@ class CorporateBrainRuntime:
 
     def upload(self, name: str, data: bytes) -> dict[str, object]:
         with self._lock:
-            result = self.registry.prepare(data, name)
-            if result.document is None or result.state == "FAILED":
-                raise ValueError("The document could not be prepared reliably.")
             safe_name = Path(name).name
+            file_hash = __import__("hashlib").sha256(data).hexdigest()
             destination = STORAGE_DIR / safe_name
             if destination.exists() and destination.read_bytes() != data:
-                destination = STORAGE_DIR / f"{destination.stem}_{result.document.file_hash[:8]}{destination.suffix}"
+                destination = STORAGE_DIR / f"{destination.stem}_{file_hash[:8]}{destination.suffix}"
             destination.write_bytes(data)
-            self._paths[result.document.file_hash] = destination
-            return next(item for item in self.documents() if item["id"] == result.document.file_hash)
+            self.refresh_documents()
+            return next(item for item in self.documents() if item["id"] == file_hash)
 
     def start_upload(self, name: str, data: bytes) -> dict[str, object]:
         job_id = str(uuid.uuid4())
@@ -134,26 +152,9 @@ class CorporateBrainRuntime:
     def _process_upload(self, job_id: str) -> None:
         name, data = self._job_payloads[job_id]
         try:
-            self._set_job(job_id, "extracting", 2)
-            result = self.registry.prepare(data, name)
-            if result.document is None or result.state == "FAILED":
-                raise ValueError("The document could not be prepared reliably.")
-            self._set_job(job_id, "normalizing", 3)
-            self._set_job(job_id, "chunking", 4, units_total=len(result.document.blocks),
-                          units_completed=len(result.document.blocks))
-            with self._lock:
-                safe_name = Path(name).name
-                destination = STORAGE_DIR / safe_name
-                if destination.exists() and destination.read_bytes() != data:
-                    destination = STORAGE_DIR / f"{destination.stem}_{result.document.file_hash[:8]}{destination.suffix}"
-                if not destination.exists():
-                    destination.write_bytes(data)
-                self._paths[result.document.file_hash] = destination
-            self._set_job(job_id, "embedding", 5)
-            self.reindex(result.document.file_hash, stage_callback=lambda stage, done: self._set_job(job_id, stage, done))
-            terminal = "warning" if result.document.warnings else "ready"
-            self._set_job(job_id, terminal, 7, status="complete",
-                          document_id=result.document.file_hash, warnings=list(result.document.warnings))
+            item = self.upload(name, data)
+            self._set_job(job_id, "ready", 2, total_stages=2, status="complete",
+                          document_id=item["id"], warnings=[])
         except Exception as exc:
             self._set_job(job_id, "failed", self._jobs[job_id].get("completed_stages", 0),
                           status="failed", error=str(exc))
@@ -171,9 +172,9 @@ class CorporateBrainRuntime:
         return dict(self._jobs[job_id])
 
     def reindex(self, file_hash: str, stage_callback=None) -> dict[str, object]:
-        document = next((item for item in self.registry.documents if item.file_hash == file_hash), None)
-        if document is None:
-            raise KeyError(file_hash)
+        self.hydrator.invalidate(file_hash)
+        self.registry.remove(file_hash)
+        document = self.hydrate_document(file_hash)
         collection, model, _ = self._load_rag()
         if stage_callback:
             stage_callback("embedding", 5)
@@ -205,13 +206,34 @@ class CorporateBrainRuntime:
         path = self._paths.get(file_hash)
         if path is None or not path.is_file() or path.parent.resolve() != STORAGE_DIR.resolve():
             raise KeyError(file_hash)
+        try:
+            import chromadb
+            collection = chromadb.PersistentClient(path=CHROMA_PATH).get_collection(COLLECTION_NAME)
+        except Exception:
+            collection = None
+        if collection is not None:
+            collection.delete(where={"file_hash": file_hash})
+            collection.delete(where={"source_file": path.name})
+            self._bm25_payload = None
         path.unlink()
-        # Rebuild the small registry so deleted content cannot remain searchable.
-        self.registry = PreparedDocumentRegistry()
-        self._paths.clear()
+        self.hydrator.invalidate(file_hash)
+        self.registry.remove(file_hash)
+        (PREVIEW_DIR / f"{file_hash}.pdf").unlink(missing_ok=True)
+        (PREVIEW_DIR / f"{file_hash}.pages.json").unlink(missing_ok=True)
         self.refresh_documents()
 
     def search(self, query: str, limit: int = 50) -> list[dict[str, object]]:
+        terms = {token.casefold() for token in re.findall(r"[\w-]{2,}", query)}
+        ranked = sorted(
+            ((len(terms & set(entry.search_text().split())), entry) for entry in self.catalog.entries.values()),
+            key=lambda pair: (-pair[0], pair[1].filename.casefold()),
+        )
+        for score, entry in ranked[:min(6, limit)]:
+            if score:
+                try:
+                    self.hydrate_document(entry.file_hash)
+                except Exception:
+                    continue
         return [{
             "document_hash": hit.document.file_hash,
             "document_name": hit.document.source_file,
@@ -226,14 +248,15 @@ class CorporateBrainRuntime:
         } for hit in self.registry.global_search(query, limit)]
 
     def source(self, file_hash: str, block_id: str) -> dict[str, object]:
+        self.hydrate_document(file_hash)
         target = self.registry.source_target(file_hash, block_id)
         if target is None:
             raise KeyError((file_hash, block_id))
         return self._source_dict(target)
 
     def first_source(self, file_hash: str) -> dict[str, object]:
-        document = next((item for item in self.registry.documents if item.file_hash == file_hash), None)
-        if document is None or not document.blocks:
+        document = self.hydrate_document(file_hash)
+        if not document.blocks:
             raise KeyError(file_hash)
         target = self.registry.source_target(file_hash, document.blocks[0].block_id)
         if target is None:
@@ -256,9 +279,7 @@ class CorporateBrainRuntime:
     def chat_direct(self, message: str, document_hash: str | None, conversation_id: str | None) -> dict[str, object]:
         if not document_hash:
             raise ValueError("Direct Answer requires a selected document.")
-        document = next((item for item in self.registry.documents if item.file_hash == document_hash), None)
-        if document is None:
-            raise KeyError(document_hash)
+        document = self.hydrate_document(document_hash)
         started = time.perf_counter()
         result = canonical_rag.answer_direct(message, document)
         answer = result.answer
@@ -297,12 +318,10 @@ class CorporateBrainRuntime:
         if intent == "FOLLOW_UP" and prior:
             retrieval_query = f"{prior} {message}"
 
-        # Correct high-confidence corpus vocabulary typos before discovery.
+        # Correct high-confidence lightweight-catalog vocabulary typos before discovery.
         vocabulary: set[str] = set()
-        for document in self.registry.documents:
-            vocabulary.update(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", document.source_file))
-            for block in document.blocks:
-                vocabulary.update(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", " ".join(filter(None, (block.section, block.sheet)))))
+        for entry in self.catalog.entries.values():
+            vocabulary.update(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", entry.search_text()))
         corrected = []
         for token in retrieval_query.split():
             bare = re.sub(r"[^A-Za-z0-9_-]", "", token)
@@ -310,28 +329,53 @@ class CorporateBrainRuntime:
             corrected.append(match[0] if match and match[0].casefold() != bare.casefold() else token)
         retrieval_query = " ".join(corrected)
 
-        discovery = self.registry.global_search(retrieval_query, 100)
-        candidate_hashes = list(dict.fromkeys(hit.document.file_hash for hit in discovery))
-        candidate_documents = [document for document in self.registry.documents
-                               if document.file_hash in candidate_hashes]
+        query_tokens = {token.casefold() for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", retrieval_query)}
+        ranked_entries = []
+        for entry in self.catalog.entries.values():
+            profile_tokens = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", entry.search_text()))
+            overlap = query_tokens & profile_tokens
+            if overlap:
+                ranked_entries.append((len(overlap) / max(len(query_tokens), 1), entry))
+        ranked_entries.sort(key=lambda pair: (-pair[0], pair[1].filename.casefold()))
+        max_documents = int(os.getenv("AI_DISCOVERY_MAX_DOCUMENTS", "6"))
+        if intent in {"EXHAUSTIVE_LIST", "TABLE_QUERY", "COMPARISON", "CORPUS_OVERVIEW"}:
+            max_documents = max(max_documents, 12)
+        candidate_entries = [entry for score, entry in ranked_entries if score >= .12][:max_documents]
+        if not candidate_entries:
+            candidate_entries = [entry for _, entry in ranked_entries[:max_documents]]
+        if not candidate_entries:
+            try:
+                _, _, bm25_payload = self._load_rag()
+                indexed_documents = bm25_payload[1]
+                indexed_metadatas = bm25_payload[2]
+                source_scores: dict[str, int] = {}
+                for text, metadata in zip(indexed_documents, indexed_metadatas):
+                    overlap = len(query_tokens & set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", text.casefold())))
+                    source_file = str(metadata.get("source_file", ""))
+                    if overlap and source_file:
+                        source_scores[source_file] = max(source_scores.get(source_file, 0), overlap)
+                by_name = {entry.filename: entry for entry in self.catalog.entries.values()}
+                candidate_entries = [by_name[name] for name, _ in sorted(
+                    source_scores.items(), key=lambda pair: (-pair[1], pair[0].casefold())
+                ) if name in by_name][:max_documents]
+            except Exception:
+                candidate_entries = []
+        if not candidate_entries and self.registry.documents:
+            candidate_documents = list(self.registry.documents)[:max_documents]
+        else:
+            candidate_documents = []
+        if not candidate_entries and intent in {"COMPARISON", "CORPUS_OVERVIEW"}:
+            candidate_entries = list(self.catalog.entries.values())[:max_documents]
         generic_terms = {
             "give", "show", "list", "all", "every", "what", "which", "where", "when",
             "with", "from", "about", "please", "test", "tests", "case", "cases", "document",
             "documents", "system", "systems", "the", "and", "for", "les", "des", "tous", "toutes",
         }
-        query_terms = {token.casefold() for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", retrieval_query)}
+        query_terms = query_tokens
         anchor_terms = query_terms - generic_terms
-        if anchor_terms:
-            anchored = []
-            for document in candidate_documents:
-                searchable = " ".join([document.source_file, *(block.text for block in document.blocks)]).casefold()
-                if all(term in searchable for term in anchor_terms):
-                    anchored.append(document)
-            if anchored:
-                candidate_documents = anchored
 
-        if not anchor_terms and query_terms & {"test", "tests", "case", "cases"} and len(candidate_documents) > 1:
-            names = ", ".join(document.source_file for document in candidate_documents[:4])
+        if not anchor_terms and query_terms & {"test", "tests", "case", "cases"} and len(candidate_entries) > 1:
+            names = ", ".join(entry.filename for entry in candidate_entries[:4])
             answer = (f"J’ai trouvé des cas de test dans plusieurs documents ({names}). Lequel souhaitez-vous explorer ?"
                       if language == "French" else
                       f"I found test cases in several documents ({names}). Which one do you want to explore?")
@@ -342,6 +386,13 @@ class CorporateBrainRuntime:
                 "suggestions": [], "latency_ms": round((time.perf_counter() - started) * 1000, 3),
             }
 
+        futures = [self._executor.submit(self.hydrate_document, entry.file_hash)
+                   for entry in candidate_entries]
+        for future in futures:
+            try:
+                candidate_documents.append(future.result())
+            except Exception:
+                continue
         evidence = []
         seen: set[tuple[str, str]] = set()
         per_document_limit = 200 if intent in {"EXHAUSTIVE_LIST", "TABLE_QUERY"} else 8
@@ -372,6 +423,14 @@ class CorporateBrainRuntime:
             "conversation_id": conversation_id or str(uuid.uuid4()), "sources": source_payload,
             "suggestions": [], "latency_ms": round((time.perf_counter() - started) * 1000, 3),
         }
+
+    def debug_metrics(self) -> dict[str, object]:
+        return {"startup_ms": round(self.startup_ms, 3),
+                "catalog_load_ms": round(self.catalog.load_time_ms, 3),
+                "catalog_entries": len(self.catalog.entries),
+                "lazy_hydration_enabled": self.lazy_enabled,
+                "hydrated_in_memory": len(self.hydrator.memory_hashes),
+                **self.hydrator.metrics}
 
 
 @lru_cache(maxsize=1)

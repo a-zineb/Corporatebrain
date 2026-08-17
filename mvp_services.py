@@ -160,6 +160,10 @@ class PreparedDocumentRegistry:
     def source_target(self, file_hash: str, block_id: str) -> SourceTarget | None:
         return self._navigation.get((file_hash, block_id))
 
+    def remove(self, file_hash: str) -> None:
+        self._documents.pop(file_hash, None)
+        self._navigation = {key: value for key, value in self._navigation.items() if key[0] != file_hash}
+
     @property
     def documents(self) -> tuple[CanonicalDocument, ...]:
         return tuple(sorted(self._documents.values(), key=lambda item: item.source_file.casefold()))
