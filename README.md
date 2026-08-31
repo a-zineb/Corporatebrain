@@ -1,212 +1,280 @@
-# Corporate Brain
+# 🧠 Corporate Brain
 
-Corporate Brain is an enterprise RAG application for deterministic document
-answers, local hybrid retrieval and Gemini API synthesis with cited sources.
+> **Enterprise RAG · Intelligent Document Search · Grounded AI Answers**
+
+Corporate Brain is an enterprise-grade **Retrieval-Augmented Generation (RAG)** platform designed to transform corporate documents into a searchable, explainable knowledge base.
+
+It combines **deterministic retrieval**, **hybrid semantic + lexical search**, **document-aware navigation**, and **Gemini-powered answer synthesis** while keeping source references under application control.
+
+---
+
+## ✨ Highlights
+
+| Capability                    | Description                                                          |
+| ----------------------------- | -------------------------------------------------------------------- |
+| 🧠 **Hybrid RAG**             | Vector + BM25 retrieval with Reciprocal Rank Fusion                  |
+| 🎯 **Deterministic Answers**  | Selected-document answers without an external AI call                |
+| ✨ **AI Answers**              | Gemini-powered synthesis grounded only in retrieved evidence         |
+| 📚 **Multi-format ingestion** | PDF, DOCX, DOC, XLSX, CSV and ZIP                                    |
+| 🔎 **Global Search**          | Search across the complete prepared document catalog                 |
+| 📌 **Source Navigation**      | Jump directly to the originating document, page, sheet or cell range |
+| 📊 **Spreadsheet Citations**  | Exact sheet, row and cell-range references                           |
+| 🕸️ **Knowledge Graph**       | Explore document relationships visually                              |
+| ⚡ **Lazy Loading**            | Parse and hydrate documents only when required                       |
+| 🔐 **Authentication**         | Clerk-based authentication with user-scoped conversations            |
+| 🌗 **Modern UI**              | React interface with dark, light and system themes                   |
+| 🧪 **Tested**                 | Python + TypeScript test suites                                      |
+| 🖥️ **Legacy Fallback**       | Streamlit application retained during migration                      |
+
+---
+
+# 🏗️ Architecture
+
+```text
+                         ┌─────────────────────────┐
+                         │       React + TS        │
+                         │       Frontend          │
+                         └────────────┬────────────┘
+                                      │
+                                  HTTP / JSON
+                                      │
+                                      ▼
+                         ┌─────────────────────────┐
+                         │        FastAPI          │
+                         │        API Layer        │
+                         └────────────┬────────────┘
+                                      │
+                             Direct function calls
+                                      │
+                                      ▼
+              ┌───────────────────────────────────────────┐
+              │          Canonical Document Engine         │
+              │                                           │
+              │  canonical_rag.py                         │
+              │  rag_pipeline.py                          │
+              │  document_normalizer.py                   │
+              └─────────────────────┬─────────────────────┘
+                                    │
+                     ┌──────────────┴──────────────┐
+                     │                             │
+                     ▼                             ▼
+              ┌──────────────┐             ┌──────────────┐
+              │   ChromaDB   │             │     BM25     │
+              │ Vector Search│             │ Lexical Search│
+              └──────┬───────┘             └──────┬───────┘
+                     │                             │
+                     └─────────────┬───────────────┘
+                                   │
+                                   ▼
+                           ┌───────────────┐
+                           │   RRF Fusion  │
+                           └───────┬───────┘
+                                   │
+                            Selected Evidence
+                                   │
+                                   ▼
+                         ┌────────────────────┐
+                         │    Gemini API      │
+                         │  Answer Synthesis  │
+                         └────────────────────┘
+```
+
+### Request modes
+
+**Direct Answer**
+
+```text
+Selected Document
+       ↓
+Deterministic Retrieval
+       ↓
+Evidence
+       ↓
+Answer
+```
+
+No external AI provider is required.
+
+**AI Answer**
+
+```text
+User Query
+    ↓
+Intent Classification
+    ↓
+Global Document Discovery
+    ↓
+Relevant Document Hydration
+    ↓
+Hybrid Retrieval
+    ↓
+Evidence Selection
+    ↓
+Gemini Synthesis
+    ↓
+Grounded Markdown Answer
+```
+
+Gemini receives only the application-selected evidence. Source cards remain controlled by Corporate Brain.
+
+---
+
+# 🚀 Quick Start
 
 ## One-command startup
 
-From PowerShell at the project root, run:
+From **PowerShell at the repository root**:
 
 ```powershell
 ./run
 ```
 
-That single command:
+The launcher automatically:
 
-1. creates the Python venv if it is missing;
-2. synchronizes `requirements.txt` inside the venv;
-3. installs Node.js LTS through `winget` if necessary;
-4. creates `frontend/.env.local` from the example;
-5. runs `npm install`;
-6. executes the strict TypeScript/Vite production build;
-7. starts FastAPI on port 8000 and React on port 5173;
-8. checks both services, then opens the application in the browser;
-9. stops both servers when you press `Ctrl+C`.
+1. Creates the Python virtual environment if necessary
+2. Synchronizes `requirements.txt`
+3. Installs Node.js LTS through `winget` when required
+4. Creates `frontend/.env.local`
+5. Runs `npm install`
+6. Executes the strict TypeScript/Vite production build
+7. Starts FastAPI on `:8000`
+8. Starts React on `:5173`
+9. Checks both services
+10. Opens the application in your browser
+11. Shuts both servers down with `Ctrl+C`
 
-For a faster development restart after a previously successful build:
+### ⚡ Faster development restart
+
+After a successful build:
 
 ```powershell
 ./run -SkipBuild
 ```
 
-To avoid opening a browser automatically, add `-NoBrowser`.
+Prevent automatic browser launch:
 
-## Architecture
+```powershell
+./run -NoBrowser
+```
+
+---
+
+# 📦 Project Structure
 
 ```text
-React + TypeScript (frontend/)
-          ↓ HTTP JSON
-FastAPI adapter (backend/)
-          ↓ direct function calls
-canonical_rag.py / rag_pipeline.py / document_normalizer.py
-          ↓
-ChromaDB + BM25/RRF + MiniLM (local retrieval)
-          ↓ selected evidence only
-Gemini API through the official Google Gen AI SDK (AI Answer generation)
-
-Streamlit app.py remains available during migration and uses the same services.
+Corporate-Brain/
+│
+├── backend/
+│   └── main.py
+│
+├── frontend/
+│   ├── src/
+│   ├── public/
+│   ├── .env.example
+│   └── package.json
+│
+├── canonical_rag.py
+├── rag_pipeline.py
+├── document_normalizer.py
+├── app.py
+│
+├── requirements.txt
+├── .env.example
+├── run
+├── run.ps1
+│
+├── chroma_db_local_v2/
+├── doc_storage_v2/
+└── .run/
+    ├── prepared/
+    └── previews/
 ```
 
-FastAPI is an adapter over the canonical document engine. Direct Answer remains
-deterministic. AI Answer classifies the query intent, resolves same-document
-follow-ups, saturates structured/exhaustive retrieval over the selected
-document, and asks the configured Gemini model to synthesize the application-selected evidence. Gemini returns conversational Markdown;
-source cards remain application-controlled. AI Answer searches all prepared
-documents by default and does not require a selected file. Direct Answer remains
-strictly selected-document only, and Knowledge Catalog makes no Gemini call.
+---
 
-## Features
+# 📚 Supported Documents
 
-- PDF, DOCX, DOC, XLSX, CSV and ZIP ingestion in the existing Streamlit flow
-- Deterministic selected-document Direct Answer without an API call
-- Hybrid vector/BM25 retrieval with RRF and API-backed generation
-- Global prepared-document search and exact canonical source navigation
-- OCM/OEG/OJO/OCI and MZ/KPSA metadata values preserved
-- React dark/light/system themes and collapsible responsive sidebar
-- Clerk authentication and user-scoped persistent conversation history
-- Streamlit fallback retained until React parity is manually certified
+Corporate Brain currently supports:
 
-## Backend development
+* 📄 PDF
+* 📝 DOCX
+* 📝 DOC
+* 📊 XLSX
+* 📋 CSV
+* 📦 ZIP
 
-From PowerShell, activate the existing environment before installing anything:
+The ingestion pipeline normalizes documents into a canonical representation before chunking, embedding and indexing.
 
-```powershell
-.\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python -m uvicorn backend.main:app --reload --port 8000
+---
+
+# 🔍 Retrieval Engine
+
+Corporate Brain uses a **hybrid retrieval architecture** combining semantic and lexical search.
+
+```text
+                    User Query
+                        │
+             ┌──────────┴──────────┐
+             │                     │
+             ▼                     ▼
+        Vector Search           BM25 Search
+          ChromaDB               Keywords
+             │                     │
+             └──────────┬──────────┘
+                        ▼
+                  RRF Fusion
+                        │
+                        ▼
+                Ranked Evidence
 ```
 
-Health check: `http://localhost:8000/api/health`
+This approach combines semantic similarity with exact keyword matching.
 
-Optional environment variables:
+The system preserves canonical metadata including:
 
-- `CORPORATE_BRAIN_STORAGE_DIR`
-- `CORPORATE_BRAIN_CHROMA_PATH`
-- `CORPORATE_BRAIN_COLLECTION`
-- `AI_PROVIDER`
-- `GEMINI_MODEL`
-- `GEMINI_TIMEOUT_SECONDS`
-- `GEMINI_TEMPERATURE`
-- `GEMINI_TOP_P`
-- `GEMINI_MAX_OUTPUT_TOKENS`
-- `GEMINI_ENABLE_STREAMING`
-
-## Gemini API setup
-
-1. Create a Gemini API key in Google AI Studio.
-2. Copy `.env.example` to a root `.env` and set `GEMINI_API_KEY=...`.
-3. Keep `AI_PROVIDER=gemini`; the default model is `gemini-3.6-flash`.
-4. Never place this secret in `frontend/.env.local`, a `VITE_` variable, source
-   code, or browser storage.
-5. Restart Corporate Brain with `./run` and verify AI Answer.
-
-If the key is missing, rejected, rate-limited, or the network times out, AI
-Answer reports a safe provider error. Direct Answer, catalog/search, graph, and
-source navigation remain available. The backend never returns the key; Settings
-shows only whether the provider is configured.
-
-## Frontend development
-
-Install a current Node.js LTS release, then:
-
-```powershell
-cd frontend
-Copy-Item .env.example .env.local
-npm install
-npm run dev
+```text
+OCM
+OEG
+OJO
+OCI
+MZ
+KPSA
 ```
 
-The frontend reads `VITE_API_BASE_URL`; no backend secrets are sent to React.
+---
 
-Production build:
+# ⚡ Lazy Document Loading
 
-```powershell
-cd frontend
-npm run build
+Corporate Brain does **not** eagerly parse every document at startup.
+
+Instead, it maintains a lightweight catalog containing:
+
+* Checksums
+* Filenames
+* File types
+* File sizes
+* Business metadata
+* Discovery terms
+
+Full parsing happens through:
+
+```python
+hydrate_document(file_hash)
 ```
 
-## Legacy Streamlit application
+### Loading strategy
 
-The working application remains available during migration:
+| Component           | Behavior                                                       |
+| ------------------- | -------------------------------------------------------------- |
+| Direct Answer       | Hydrates only the selected document                            |
+| AI Answer           | Searches document profiles first, then hydrates relevant files |
+| Source Navigation   | Reuses hydrated documents                                      |
+| Upload              | Creates catalog entry before full parsing                      |
+| Cache               | Bounded in-memory LRU + persistent cache                       |
+| Concurrent requests | Share the same in-flight hydration                             |
+| File changes        | New checksum invalidates the relevant cache                    |
 
-```powershell
-.\venv\Scripts\Activate.ps1
-streamlit run app.py
-```
-
-Do not uninstall Streamlit until chat, AI generation, citations, filters,
-uploads, deletion and source navigation pass the browser acceptance checklist.
-
-## API endpoints
-
-- `GET /api/health`
-- `GET /api/filters`
-- `GET /api/documents`
-- `POST /api/documents/upload`
-- `POST /api/documents/upload-async`
-- `GET /api/ingestion/jobs`
-- `POST /api/ingestion/jobs/{job_id}/retry`
-- `POST /api/documents/{file_hash}/reindex`
-- `DELETE /api/documents/{file_hash}`
-- `GET /api/documents/{file_hash}/content` (registered files only; no client path)
-- `GET /api/documents/{file_hash}/preview` (cached rendered DOCX PDF)
-- `GET /api/documents/{file_hash}/preview-info?block_id=...`
-- `GET /api/documents/{file_hash}/table?sheet=...`
-- `POST /api/search`
-- `GET /api/sources/{file_hash}/{block_id}`
-- `POST /api/chat` with `mode: direct | ai`
-- `GET|PUT|PATCH|DELETE /api/conversations/{conversation_id}`
-
-Spreadsheet citations expose the exact sheet and cell range. CSV citations
-expose the original row number. PDF citations open the registered original at
-the one-based PDF page using `#page=N`; arbitrary filesystem paths are never
-accepted by the API.
-
-DOCX evidence previews are generated lazily with Microsoft Word on Windows and
-cached under `.run/previews` by document checksum. The original DOCX remains
-immutable and is served separately. If Word automation is unavailable, the API
-returns a controlled 503 response and the UI keeps the original-file action.
-
-Asynchronous ingestion reports real pipeline stages (`uploading`, `extracting`,
-`normalizing`, `chunking`, `embedding`, `indexing`, then `ready`, `warning`, or
-`failed`). Retry reuses the retained upload payload. Re-index deletes only the
-selected document's old Chroma records by checksum/source identity before
-adding stable block IDs and rebuilding BM25.
-
-## Graph View
-
-Graph View uses bounded 18–46 px nodes, collision-aware force layout, a
-significance threshold, and at most three strongest edges per document. It
-supports approximate search, file-type filtering, Global/Focused/Community
-modes, zoom/reset/fullscreen controls, tooltips, relation explanations, and a
-document detail panel. Run its deterministic tests with:
-
-```powershell
-cd frontend
-npm test
-```
-
-## Lazy document loading
-
-At startup Corporate Brain scans a persistent lightweight catalog containing
-checksums, filenames, types, sizes, basic business metadata and discovery
-terms. Document cards and the Knowledge Graph use this catalog; they do not
-parse every PDF, Word document or workbook.
-
-Full parsing flows through one `hydrate_document(file_hash)` service:
-
-- Direct Answer hydrates only the selected document.
-- AI Answer first searches all lightweight profiles, then hydrates only the
-  relevant files using a bounded worker pool. No selected document is required.
-- Source navigation reuses the same hydrated document.
-- Upload stores the original and creates its catalog card before full parsing.
-- Hydrated documents use a bounded in-memory LRU and a schema-versioned
-  persistent cache under `.run/prepared`.
-- Concurrent requests for the same checksum share one in-flight hydration.
-- Changing bytes changes the checksum; changing the canonical schema changes
-  the persistent cache key.
-
-Configuration:
+### Configuration
 
 ```env
 LAZY_HYDRATION_ENABLED=true
@@ -215,140 +283,555 @@ MAX_CONCURRENT_HYDRATIONS=3
 AI_DISCOVERY_MAX_DOCUMENTS=6
 ```
 
-Measured on the current 22-document corpus (cold Python process, persistent
-catalog available): startup decreased from 59,686 ms and 22 eagerly parsed
-documents to 486 ms and zero hydrated documents. Document-card serialization
-took 0.05 ms. In the measured run, a persistent PDF/DOCX hydration took about
-8 ms internally, a first uncached XLSX hydration took 431 ms, and subsequent
-in-memory hits took about 0.02 ms.
+### Performance
 
-## Tests
+On the current **22-document corpus**, the measured startup time decreased from approximately:
+
+```text
+59,686 ms  →  486 ms
+```
+
+with zero documents hydrated during startup.
+
+Additional measured values:
+
+```text
+Document-card serialization     ≈ 0.05 ms
+Persistent PDF/DOCX hydration   ≈ 8 ms
+First uncached XLSX hydration   ≈ 431 ms
+In-memory cache hit             ≈ 0.02 ms
+```
+
+---
+
+# 🕸️ Knowledge Graph
+
+The Graph View provides a visual representation of relationships between documents.
+
+### Capabilities
+
+* Approximate search
+* File-type filtering
+* Global / Focused / Community modes
+* Zoom and reset controls
+* Fullscreen mode
+* Tooltips
+* Relationship explanations
+* Document detail panel
+* Collision-aware force layout
+* Significance filtering
+* Maximum three strongest edges per document
+
+Run frontend tests with:
+
+```powershell
+cd frontend
+npm test
+```
+
+---
+
+# 🔐 Authentication
+
+Corporate Brain uses **Clerk** for authentication.
+
+```text
+React / Clerk
+      │
+      │ JWT
+      ▼
+   FastAPI
+      │
+      ▼
+JWT verification
+      │
+      ▼
+User-scoped conversations
+```
+
+The frontend receives only the **publishable key**.
+
+The backend verifies Clerk JWTs using the instance's public JWKS endpoint.
+
+> ⚠️ `CLERK_SECRET_KEY` is never required by the frontend and must never be exposed through Vite.
+
+---
+
+# 🤖 Gemini Configuration
+
+## Setup
+
+1. Create a Gemini API key in Google AI Studio.
+2. Copy `.env.example` to `.env`.
+3. Configure:
+
+```env
+GEMINI_API_KEY=your_key_here
+AI_PROVIDER=gemini
+```
+
+The default model is:
+
+```text
+gemini-3.6-flash
+```
+
+### Available configuration
+
+```env
+AI_PROVIDER
+GEMINI_MODEL
+GEMINI_TIMEOUT_SECONDS
+GEMINI_TEMPERATURE
+GEMINI_TOP_P
+GEMINI_MAX_OUTPUT_TOKENS
+GEMINI_ENABLE_STREAMING
+```
+
+### 🔒 Security
+
+Never place the Gemini API key in:
+
+```text
+frontend/.env.local
+VITE_* variables
+source code
+browser storage
+```
+
+If the provider is unavailable, Direct Answer and document search remain functional.
+
+---
+
+# 🖥️ Frontend Development
+
+Install a current Node.js LTS release.
+
+```powershell
+cd frontend
+Copy-Item .env.example .env.local
+npm install
+npm run dev
+```
+
+Configure:
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+Backend secrets are never sent to React.
+
+### Production build
+
+```powershell
+cd frontend
+npm run build
+```
+
+---
+
+# ⚙️ Backend Development
+
+Activate the Python environment:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Start FastAPI:
+
+```powershell
+python -m uvicorn backend.main:app --reload --port 8000
+```
+
+Health endpoint:
+
+```text
+http://localhost:8000/api/health
+```
+
+---
+
+# 🧩 Legacy Streamlit Application
+
+The original Streamlit application remains available during the React migration.
+
+```powershell
+.\venv\Scripts\Activate.ps1
+streamlit run app.py
+```
+
+Do not remove Streamlit until the following have passed browser acceptance testing:
+
+* Chat
+* AI generation
+* Citations
+* Filters
+* Uploads
+* Deletion
+* Source navigation
+
+---
+
+# 🔌 API Reference
+
+## Health & Discovery
+
+```http
+GET /api/health
+GET /api/filters
+GET /api/documents
+```
+
+## Documents
+
+```http
+POST   /api/documents/upload
+POST   /api/documents/upload-async
+DELETE /api/documents/{file_hash}
+POST   /api/documents/{file_hash}/reindex
+GET    /api/documents/{file_hash}/content
+GET    /api/documents/{file_hash}/preview
+GET    /api/documents/{file_hash}/preview-info
+GET    /api/documents/{file_hash}/table
+```
+
+## Ingestion
+
+```http
+GET  /api/ingestion/jobs
+POST /api/ingestion/jobs/{job_id}/retry
+```
+
+## Search & Sources
+
+```http
+POST /api/search
+GET  /api/sources/{file_hash}/{block_id}
+```
+
+## Chat
+
+```http
+POST /api/chat
+```
+
+Supported modes:
+
+```text
+direct
+ai
+```
+
+## Conversations
+
+```http
+GET    /api/conversations/{conversation_id}
+PUT    /api/conversations/{conversation_id}
+PATCH  /api/conversations/{conversation_id}
+DELETE /api/conversations/{conversation_id}
+```
+
+---
+
+# 📌 Citation System
+
+Corporate Brain maintains precise source references across different file types.
+
+| File type | Citation                    |
+| --------- | --------------------------- |
+| 📊 XLSX   | Exact sheet + cell range    |
+| 📋 CSV    | Original row number         |
+| 📄 PDF    | Original one-based PDF page |
+| 📝 DOCX   | Cached rendered preview     |
+
+PDF citations use:
+
+```text
+#page=N
+```
+
+Arbitrary filesystem paths are never accepted by the API.
+
+---
+
+# 🔄 Ingestion Pipeline
+
+Asynchronous ingestion exposes real processing stages:
+
+```text
+uploading
+    ↓
+extracting
+    ↓
+normalizing
+    ↓
+chunking
+    ↓
+embedding
+    ↓
+indexing
+    ↓
+ready
+```
+
+Alternative terminal states:
+
+```text
+warning
+failed
+```
+
+Retry operations reuse the retained upload payload.
+
+Re-indexing removes only the selected document's previous Chroma records before rebuilding its index.
+
+---
+
+# 🧪 Testing
+
+## Backend
 
 ```powershell
 .\venv\Scripts\Activate.ps1
 python -m pytest -q
 ```
 
-Document and Chroma data remain local and must not be committed.
+## Frontend
 
-### Chroma benchmark and re-indexing
+```powershell
+cd frontend
+npm test
+```
 
-The committed `corporatebrain.v1` benchmark is certified against its immutable
-1,072-chunk corpus. The development upload folder can legitimately produce a
-different count and must not be made to pass by editing that manifest.
+---
 
-Before rebuilding a development index, back up `doc_storage_v2` and
-`chroma_db_local_v2`, remove unintended duplicate uploads through the
-application, and start a fresh collection name:
+# 🗄️ ChromaDB & Re-indexing
+
+The certified benchmark:
+
+```text
+Collection: corporatebrain.v1
+Corpus: 1,072 chunks
+```
+
+The development upload directory may legitimately contain a different number of chunks.
+
+Before rebuilding a development index:
+
+1. Back up `doc_storage_v2`
+2. Back up `chroma_db_local_v2`
+3. Remove unintended duplicate uploads through the application
+4. Start a fresh collection
+
+Example:
 
 ```powershell
 $env:CORPORATE_BRAIN_COLLECTION="documents-schema-v3"
 ./run.ps1
 ```
 
-Keep the old collection until representative searches and citations have been
-verified. A parser/schema change requires a new collection name or an explicit
-full re-index; mixing chunks produced by different parser versions is not a
-certified state.
+Keep the previous collection until representative searches and citations have been verified.
 
-## Authentication with Clerk
+> ⚠️ Parser or schema changes require a new collection name or an explicit full re-index. Mixing chunks from different parser versions is not a certified state.
 
-Corporate Brain uses Clerk in the React/Vite frontend and verifies Clerk session
-JWTs in FastAPI. The frontend receives only a publishable key. The backend uses
-the instance's public JWKS endpoint; this implementation does not require or
-expose `CLERK_SECRET_KEY`.
+---
 
-### 1. Create the Clerk application
+# 🔧 Environment Variables
 
-Create an account and application in the Clerk Dashboard. On the **API keys**
-page, copy the Publishable Key and the Frontend API URL. The current frontend
-dependency is `@clerk/react`; backend verification uses `PyJWT[crypto]`.
-
-### 2. Install dependencies
-
-Keep the Python virtual environment active for Python packages:
-
-```powershell
-.\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-cd frontend
-npm install
-cd ..
-```
-
-### 3. Configure the frontend
-
-Copy `frontend/.env.example` to `frontend/.env.local`, then set:
+## Storage
 
 ```env
-VITE_API_BASE_URL=http://localhost:8000
-VITE_CLERK_PUBLISHABLE_KEY=pk_test_your_publishable_key
+CORPORATE_BRAIN_STORAGE_DIR
+CORPORATE_BRAIN_CHROMA_PATH
+CORPORATE_BRAIN_COLLECTION
 ```
 
-Restart Vite after changing this file. An empty key intentionally displays an
-authentication-configuration screen instead of a fake user profile.
+## AI
 
-### 4. Configure the backend
-
-Copy `.env.example` values into the server environment (PowerShell example):
-
-```powershell
-$env:CLERK_JWKS_URL="https://your-frontend-api/.well-known/jwks.json"
-$env:CLERK_AUTHORIZED_PARTIES="http://localhost:5173,http://127.0.0.1:5173"
+```env
+AI_PROVIDER
+GEMINI_MODEL
+GEMINI_TIMEOUT_SECONDS
+GEMINI_TEMPERATURE
+GEMINI_TOP_P
+GEMINI_MAX_OUTPUT_TOKENS
+GEMINI_ENABLE_STREAMING
 ```
 
-`CLERK_JWKS_URL` is the Clerk Frontend API URL followed by
-`/.well-known/jwks.json`. `CLERK_AUTHORIZED_PARTIES` is a comma-separated allow
-list checked against the token's `azp` claim. If `CLERK_JWKS_URL` is absent, the
-backend retains the documented local-development boundary for compatibility;
-production deployments must set it.
+## Lazy Hydration
 
-### 5. Configure the Clerk Dashboard
-
-Allow `http://localhost:5173` and `http://127.0.0.1:5173` during development.
-Add the real HTTPS production origin before deployment. This app uses Clerk's
-modal sign-in/sign-up flows and returns to `/`, so no custom callback route is
-required. Configure production sign-in/sign-up URLs only if replacing those
-modals with hosted pages.
-
-### 6. Start the app
-
-From the repository root:
-
-```powershell
-./run
+```env
+LAZY_HYDRATION_ENABLED=true
+HYDRATED_DOCUMENT_CACHE_SIZE=8
+MAX_CONCURRENT_HYDRATIONS=3
+AI_DISCOVERY_MAX_DOCUMENTS=6
 ```
 
-For troubleshooting, start FastAPI with
-`python -m uvicorn backend.main:app --reload --port 8000` and Vite with
-`cd frontend; npm run dev` in separate terminals.
+## Frontend
 
-### 7. Test authentication
+```env
+VITE_API_BASE_URL
+VITE_CLERK_PUBLISHABLE_KEY
+```
 
-Open the frontend. Chat, Direct Answer and AI Answer work while signed out.
-Optionally create an account or sign in, open **Profile** from the
-bottom-left card, start a document chat, verify it appears under **Recent** and
-**History**, reopen it, then sign out with Clerk's user button. A different
-Clerk account must not see the first account's conversations.
+## Authentication
 
-### 8. Common errors
+```env
+CLERK_JWKS_URL
+CLERK_AUTHORIZED_PARTIES
+```
 
-- **Missing publishable key:** set `VITE_CLERK_PUBLISHABLE_KEY` and restart Vite.
-- **Wrong origin:** add the exact localhost or production origin in Clerk.
-- **401 from FastAPI:** confirm the browser sends `Authorization: Bearer ...`,
-  the JWKS URL belongs to the same Clerk instance, and `azp` is allowed.
-- **Invalid/expired session:** sign out/in and verify the system clock.
-- **“Invalid or expired session”:** restart Vite after `.env.local` changes,
-  verify the publishable key and backend JWKS belong to the same Clerk
-  application, and confirm requests can obtain a current bearer token. A stale
-  or invalid token now falls back to signed-out mode and cannot block RAG.
-- **`.env.local` not loaded:** keep it inside `frontend/` and restart Vite.
-- **Backend environment ignored:** set variables in the terminal that launches
-  FastAPI (or load them through your deployment platform).
+---
 
-### 9. Security
+# 🛡️ Security
 
-Never commit `.env.local`, never expose `CLERK_SECRET_KEY` to Vite, and never
-place server secrets in variables prefixed with `VITE_`. Publishable keys are
-safe for frontend use. Revoke and rotate any credential that is accidentally
-leaked. Conversation records are scoped by the verified Clerk `sub` user ID.
+Corporate Brain follows a strict separation between frontend configuration and server-side secrets.
+
+### Never commit
+
+```text
+.env
+.env.local
+API keys
+server secrets
+document storage
+Chroma data
+```
+
+### Never expose
+
+```text
+CLERK_SECRET_KEY
+GEMINI_API_KEY
+server-side credentials
+```
+
+### User isolation
+
+Conversation records are scoped using the verified Clerk `sub` user identifier.
+
+If a credential is accidentally exposed:
+
+> **Revoke it and rotate it immediately.**
+
+---
+
+# 📈 Current Performance
+
+### Startup
+
+```text
+Before lazy hydration    59,686 ms
+After lazy hydration        486 ms
+
+Improvement              ~99%
+```
+
+### Corpus
+
+```text
+Documents                  22
+Certified benchmark chunks 1,072
+```
+
+### Hydration
+
+```text
+PDF/DOCX persistent       ~8 ms
+XLSX uncached           ~431 ms
+Memory cache             ~0.02 ms
+```
+
+---
+
+# 🧭 Development Philosophy
+
+Corporate Brain is built around several core principles:
+
+### 1. Grounded answers
+
+AI answers should be generated from application-selected evidence rather than unrestricted model knowledge.
+
+### 2. Deterministic retrieval
+
+Direct Answer remains deterministic and does not require an AI provider.
+
+### 3. Source transparency
+
+Users should be able to navigate from an answer back to the originating document.
+
+### 4. Efficient document processing
+
+Documents are hydrated only when necessary.
+
+### 5. Separation of concerns
+
+```text
+Frontend
+   ↓
+API
+   ↓
+Canonical document services
+   ↓
+Retrieval
+   ↓
+Evidence
+   ↓
+AI synthesis
+```
+
+### 6. Graceful degradation
+
+If Gemini is unavailable, core search, Direct Answer, catalog, graph and source navigation remain available.
+
+---
+
+# 🚦 Development Status
+
+```text
+┌─────────────────────────────────────────┐
+│         CORPORATE BRAIN                 │
+│                                         │
+│  🟢 RAG Engine          Available       │
+│  🟢 Hybrid Retrieval    Available       │
+│  🟢 React Frontend      Available       │
+│  🟢 FastAPI Backend     Available       │
+│  🟢 Gemini Integration  Available       │
+│  🟢 Clerk Auth          Available       │
+│  🟢 Knowledge Graph     Available       │
+│  🟢 Lazy Hydration      Available       │
+│  🟡 Streamlit           Migration mode  │
+└─────────────────────────────────────────┘
+```
+
+---
+
+# 🧠 Corporate Brain
+
+**Turn corporate documents into an intelligent, searchable and explainable knowledge base.**
+
+```text
+Documents
+    ↓
+Normalize
+    ↓
+Index
+    ↓
+Retrieve
+    ↓
+Ground
+    ↓
+Answer
+    ↓
+Cite
+```
+
+> **Search less. Understand more.**
